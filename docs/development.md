@@ -13,6 +13,18 @@ make check
 
 The test suite uses `unittest`, so no additional test framework is required.
 One optional test invokes `mlir-opt`; it is skipped when MLIR is unavailable.
+Install the pinned Apple Silicon toolchain used by this project with:
+
+```bash
+./scripts/bootstrap-mlir.sh
+export PATH="$PWD/.deps/llvm-macos-arm64/bin:$PATH"
+```
+
+The 359 MiB archive and extracted toolchain live under `.deps/` and are not
+tracked by Git. The bootstrap script verifies the published SHA-256 digest.
+This Triton archive is a development toolchain: it supplies MLIR headers,
+libraries, CMake configuration, `mlir-tblgen`, and `mlir-translate`. EinsumCC
+builds its own optimizer driver instead of assuming a bundled `mlir-opt`.
 
 macOS system Python may place bytecode under `~/Library/Caches`. In restricted
 environments, either disable bytecode or redirect its cache:
@@ -59,4 +71,3 @@ semantics and differential correctness.
 8. Store GPU tuning records under a hardware/toolchain-specific target name.
 9. Add cuTENSOR and course starter kernels as external baselines.
 10. Report latency, GFLOP/s, workspace, selected plan, and selector regret.
-
