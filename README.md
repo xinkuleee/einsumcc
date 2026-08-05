@@ -21,15 +21,23 @@ plan interfaces are designed to feed an MLIR/CUDA backend on an A100 machine.
 - `tc.contract` to `linalg.generic` conversion in the project-owned
   `einsumcc-opt` driver;
 - a tested macOS path from Einstein notation through loops and LLVM IR to a
-  native arm64 executable.
+  native arm64 dynamic library;
+- a small native Direct runtime with ranked-memref validation, content-addressed
+  artifacts, and process-safe cache population.
+
+The three plans are implemented by the Python CPU semantic backend. Native
+MLIR code generation in Nano v1 is intentionally narrower: it lowers Direct
+only, and the generated loop nest does not yet consume the schedule selected
+by the planner. GEMM-plan lowering and schedule-driven code generation belong
+to Mini.
 
 FP32 is the executable Nano v1 datatype. FP16/BF16, Tensor Cores, arbitrary
 GPU layouts, and fused epilogues are later milestones.
 
 ## Quick start
 
-No installation is required for development. NumPy is the only runtime
-dependency.
+NumPy is the only dependency for the Python semantic backend. Native MLIR
+commands additionally require the pinned toolchain described below.
 
 ```bash
 make test
@@ -56,17 +64,26 @@ PYTHONPATH=src python3 -m einsumcc verify \
   'bij,bjk->bik' --lhs-shape 2,3,4 --rhs-shape 2,4,5
 ```
 
-Emit the semantic `tc.contract` module (use `--stage linalg` to inspect its
-frontend-only expansion):
+Emit the semantic `tc.contract` module. `--stage linalg`, `llvm`, and `llvm-ir`
+show successive outputs from the real project-owned native lowering pipeline:
 
 ```bash
 PYTHONPATH=src python3 -m einsumcc emit-mlir \
   'mk,kn->mn' --lhs-shape 32,16 --rhs-shape 16,64
 ```
 
-`make test-cpu-codegen` performs the real compiler smoke test: Python Einstein
+Compile, cache, execute, and differentially check that same Direct contraction
+on the host CPU:
+
+```bash
+PYTHONPATH=src python3 -m einsumcc run-native \
+  'mk,kn->mn' --lhs-shape 32,16 --rhs-shape 16,64
+```
+
+`make test-cpu-codegen` performs the real compiler test: Python Einstein
 frontend → `tc.contract` → `linalg` → bufferization → loops → LLVM dialect →
-LLVM IR → native arm64 binary, then checks its numeric matrix result.
+LLVM IR → native arm64 dynamic library, then checks seven representative
+contractions against NumPy, including positive-stride inputs.
 
 ## Documentation
 

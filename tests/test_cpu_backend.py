@@ -22,6 +22,13 @@ def strided_random(shape, strides, seed):
 
 class CpuBackendTest(unittest.TestCase):
     CASES = (
+        # Cover every presence combination of the optional B/M/N groups. K is
+        # mandatory in Nano v1; empty matrix groups collapse to size one.
+        ("bk,bk->b", (2, 3), (2, 3)),
+        ("mk,k->m", (2, 3), (3,)),
+        ("k,kn->n", (3,), (3, 4)),
+        ("bmk,bk->bm", (2, 3, 4), (2, 4)),
+        ("bk,bkn->bn", (2, 3), (2, 3, 4)),
         ("mk,kn->mn", (3, 4), (4, 5)),
         ("bij,bjk->bik", (2, 3, 4), (2, 4, 5)),
         ("aij,jib->ab", (2, 3, 4), (4, 3, 5)),

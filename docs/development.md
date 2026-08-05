@@ -40,8 +40,21 @@ The complete local compiler checks are:
 ./scripts/test-cpu-codegen.sh
 ```
 
-The CPU codegen smoke test starts from the CLI's Einstein input and crosses the
-custom dialect boundary before compiling LLVM IR to a native arm64 executable.
+The CPU codegen test starts from the Einstein frontend and crosses the custom
+dialect boundary before compiling LLVM IR to a native arm64 dynamic library.
+The project runtime passes ranked-memref descriptors and checks matrix,
+batched, permuted, scalar-output, multi-reduction, course, and positive-stride
+input contractions against NumPy. Input descriptors carry runtime strides; the
+Nano output ABI remains C-contiguous. This harness is an end-to-end compiler
+test. `NativeCpuCompiler` also exposes this narrow static AOT path through the
+Python API and `run-native`; dynamic shapes, arbitrary device buffers, and a
+long-lived JIT execution engine remain deferred to Mini.
+
+Native artifacts default to `.einsumcc-cache/native-v1`. The `run-native` CLI
+accepts `--native-cache`, and embedding callers can pass `cache_dir` to
+`NativeCpuCompiler`.
+Tool discovery can be overridden with `EINSUMCC_ROOT`, `EINSUMCC_OPT`,
+`EINSUMCC_MLIR_TRANSLATE`, and `EINSUMCC_CLANG`.
 
 macOS system Python may place bytecode under `~/Library/Caches`. In restricted
 environments, either disable bytecode or redirect its cache:

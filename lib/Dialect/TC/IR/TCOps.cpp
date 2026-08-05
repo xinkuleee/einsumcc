@@ -1,10 +1,15 @@
 #include "einsumcc/Dialect/TC/IR/TCOps.h"
 
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/Diagnostics.h"
+
+#include <optional>
 
 using namespace mlir;
 using namespace mlir::einsumcc::tc;
@@ -38,6 +43,97 @@ LogicalResult verifyMap(ContractOp op, AffineMap map, RankedTensorType type,
   return success();
 }
 
+LogicalResult verifyEquation(ContractOp op, StringRef equation, AffineMap lhsMap,
+                             AffineMap rhsMap, AffineMap resultMap,
+                             ArrayAttr iteratorTypes) {
+  // `equation` is optional so non-Einstein frontends can construct the op, but
+  // when present it is semantic metadata: accepting a contradictory label
+  // spelling would make diagnostics and compiler dumps lie about the maps.
+  if (equation.count("->") != 1)
+    return op.emitOpError("equation must contain exactly one explicit '->'");
+  auto [inputs, output] = equation.split("->");
+  if (inputs.count(',') != 1)
+    return op.emitOpError("equation must contain exactly two input operands");
+  auto [lhs, rhs] = inputs.split(',');
+  if (lhs.empty() || rhs.empty())
+    return op.emitOpError("equation input subscripts cannot be empty");
+
+  auto verifyLabels = [&](StringRef labels, StringRef role,
+                          bool allowEmpty) -> LogicalResult {
+    if (!allowEmpty && labels.empty())
+      return op.emitOpError() << role << " equation subscript cannot be empty";
+    llvm::SmallDenseSet<char, 8> seen;
+    for (char label : labels) {
+      if (!llvm::isAlpha(label))
+        return op.emitOpError()
+               << role << " equation indices must be single ASCII letters";
+      if (!seen.insert(label).second)
+        return op.emitOpError()
+               << role << " equation repeats index '" << label
+               << "'; diagonal semantics are not supported";
+    }
+    return success();
+  };
+  if (failed(verifyLabels(lhs, "lhs", /*allowEmpty=*/false)) ||
+      failed(verifyLabels(rhs, "rhs", /*allowEmpty=*/false)) ||
+      failed(verifyLabels(output, "result", /*allowEmpty=*/true)))
+    return failure();
+
+  if (lhs.size() != lhsMap.getNumResults() ||
+      rhs.size() != rhsMap.getNumResults() ||
+      output.size() != resultMap.getNumResults())
+    return op.emitOpError(
+        "equation subscript ranks must match the three indexing maps");
+
+  llvm::SmallDenseMap<char, unsigned, 8> labelLoops;
+  auto bindLabels = [&](StringRef labels, AffineMap map, StringRef role) {
+    for (auto [index, expression] : llvm::enumerate(map.getResults())) {
+      char label = labels[index];
+      unsigned loop = cast<AffineDimExpr>(expression).getPosition();
+      auto [entry, inserted] = labelLoops.try_emplace(label, loop);
+      if (!inserted && entry->second != loop) {
+        op.emitOpError() << "equation index '" << label
+                         << "' maps to different loop dimensions; " << role
+                         << " uses #" << loop << " but an earlier map uses #"
+                         << entry->second;
+        return failure();
+      }
+    }
+    return success();
+  };
+  if (failed(bindLabels(lhs, lhsMap, "rhs/result map")) ||
+      failed(bindLabels(rhs, rhsMap, "rhs map")) ||
+      failed(bindLabels(output, resultMap, "result map")))
+    return failure();
+
+  llvm::SmallDenseSet<char, 8> lhsLabels(lhs.begin(), lhs.end());
+  llvm::SmallDenseSet<char, 8> rhsLabels(rhs.begin(), rhs.end());
+  llvm::SmallDenseSet<char, 8> outputLabels(output.begin(), output.end());
+  for (auto [label, loop] : labelLoops) {
+    bool inLhs = lhsLabels.contains(label);
+    bool inRhs = rhsLabels.contains(label);
+    bool inOutput = outputLabels.contains(label);
+    StringRef iterator = cast<StringAttr>(iteratorTypes[loop]).getValue();
+    if (inOutput) {
+      if (iterator != "parallel")
+        return op.emitOpError()
+               << "equation output index '" << label
+               << "' must map to a parallel iterator";
+      if (!inLhs && !inRhs)
+        return op.emitOpError()
+               << "equation output index '" << label
+               << "' is absent from both inputs";
+    } else {
+      if (iterator != "reduction" || !inLhs || !inRhs)
+        return op.emitOpError()
+               << "equation non-output index '" << label
+               << "' must be a reduction present in both inputs";
+    }
+  }
+
+  return success();
+}
+
 } // namespace
 
 LogicalResult ContractOp::verify() {
@@ -46,6 +142,9 @@ LogicalResult ContractOp::verify() {
   auto resultType = dyn_cast<RankedTensorType>(getResult().getType());
   if (!lhsType || !rhsType || !resultType)
     return emitOpError("requires ranked tensor operands and result");
+  if (lhsType.getEncoding() || rhsType.getEncoding() || resultType.getEncoding())
+    return emitOpError(
+        "does not support encoded tensor types in Nano v1 lowering");
 
   if (lhsType.getRank() < 1 || lhsType.getRank() > 6 || rhsType.getRank() < 1 ||
       rhsType.getRank() > 6)
@@ -163,6 +262,11 @@ LogicalResult ContractOp::verify() {
   if (failed(mergeExtents(lhsMap, lhsType, "lhs")) ||
       failed(mergeExtents(rhsMap, rhsType, "rhs")) ||
       failed(mergeExtents(resultMap, resultType, "result")))
+    return failure();
+
+  if (std::optional<StringRef> equation = getEquation(); equation &&
+      failed(verifyEquation(*this, *equation, lhsMap, rhsMap, resultMap,
+                            iteratorTypes)))
     return failure();
 
   return success();

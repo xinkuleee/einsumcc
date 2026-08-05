@@ -2,7 +2,12 @@ import unittest
 
 from einsumcc.equation import Equation
 from einsumcc.errors import VerificationError
-from einsumcc.problem import ContractionProblem, TensorSpec, contiguous_strides
+from einsumcc.problem import (
+    ContractionProblem,
+    IndexGroups,
+    TensorSpec,
+    contiguous_strides,
+)
 
 
 class ProblemTest(unittest.TestCase):
@@ -55,6 +60,41 @@ class ProblemTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             problem.extents["m"] = 99
         self.assertEqual(problem.workload_key, original_key)
+
+    def test_direct_tensor_spec_construction_cannot_bypass_verification(self):
+        invalid = (
+            ((0, 2), (2, 1), "f32"),
+            ((2, 2), (0, 1), "f32"),
+            ((2, 2), (2, 1), "f64"),
+            ((2, 2), (1,), "f32"),
+            ((2.5, 2), (2, 1), "f32"),
+        )
+        for shape, strides, dtype in invalid:
+            with self.subTest(shape=shape, strides=strides, dtype=dtype):
+                with self.assertRaises(VerificationError):
+                    TensorSpec(shape, strides, dtype)
+        self.assertEqual(TensorSpec((), (), "f32").shape, ())
+
+    def test_direct_problem_construction_rejects_contradictory_metadata(self):
+        valid = ContractionProblem.create("mk,kn->mn", (2, 3), (3, 4))
+        contradictions = (
+            {"output": TensorSpec((9, 9), (9, 1))},
+            {"groups": IndexGroups((), ("n",), ("m",), ("k",))},
+            {"extents": {"m": 2, "k": 99, "n": 4}},
+        )
+        for replacement in contradictions:
+            values = {
+                "equation": valid.equation,
+                "lhs": valid.lhs,
+                "rhs": valid.rhs,
+                "output": valid.output,
+                "groups": valid.groups,
+                "extents": valid.extents,
+            }
+            values.update(replacement)
+            with self.subTest(replacement=replacement):
+                with self.assertRaises(VerificationError):
+                    ContractionProblem(**values)
 
 
 if __name__ == "__main__":

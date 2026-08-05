@@ -33,7 +33,12 @@ the verifier rather than silently miscompiled.
 6. Cache a measured plan/schedule using a stable workload key.
 7. Execute CPU semantics and compare all legal plans against a reference.
 8. Emit a verified `tc.contract`, lower it to initialized `linalg.generic`,
-   then lower a static contiguous CPU case to native code.
+   then lower static CPU cases (including positive-stride inputs) through the
+   native Direct path.
+
+The Python semantic backend executes Direct, GEMM-view, and Packed-GEMM. The
+Nano v1 MLIR backend implements Direct only; its current generic loop lowering
+does not consume the planner's `DirectSchedule`.
 
 ## Completion gates
 
@@ -50,10 +55,10 @@ the verifier rather than silently miscompiled.
 
 ## Deferred to Mini
 
-- dynamically shaped tensors;
-- a general Python/JIT runtime and arbitrary device-buffer ownership (Nano has
-  a documented static memref smoke-test ABI);
+- a long-lived JIT execution engine, dynamically shaped tensors, and arbitrary
+  device-buffer ownership (Nano has a small static AOT/memref runtime);
 - FP16/BF16 and mixed-precision accumulation;
 - Tensor Core-specific Direct lowering;
+- native GEMM-view/Packed-GEMM lowering and schedule-driven native loops;
 - contraction/epilogue fusion;
 - learned cost models and multi-input contraction-order search.

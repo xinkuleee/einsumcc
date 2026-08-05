@@ -97,7 +97,9 @@ cannot override an A100 decision.
 
 `TcEmitter` generates the project-owned `tc.contract` operation. Its C++
 verifier independently checks ranked static FP32 tensors, map ranks, exact
-B/M/N/K memberships, iterator classes, and loop extents. The
+B/M/N/K memberships, iterator classes, loop extents, and consistency between
+the optional Einstein equation and maps. Nano v1 rejects encoded tensor types
+at this boundary because its dense lowering cannot preserve an encoding. The
 `tc-contract-to-linalg` pass materializes zero initialization and a
 `linalg.generic` multiply-add body.
 
@@ -107,6 +109,18 @@ The tested macOS Direct path is:
 Einstein frontend -> tc.contract -> linalg.generic -> bufferization
   -> scf/cf loops -> LLVM dialect -> LLVM IR -> native arm64
 ```
+
+`NativeCpuCompiler` drives that path and stores content-addressed AOT artifacts
+under `.einsumcc-cache/native-v1`. The cache identity covers the workload
+(including layout), semantic IR, pipeline revision, executable metadata, and
+host identity; the manifest also checksums the shared library. A sidecar file
+lock serializes concurrent population. `NativeKernel` calls the generated C
+wrapper with validated ranked-memref descriptors. Python owns the input and
+output arrays, so generated code never transfers heap ownership across the ABI;
+output/input overlap is rejected because the kernel zero-initializes output.
+This native pipeline implements Direct only. The three-plan selector and
+`DirectSchedule` are fully exercised by the Python semantic backend, but the
+selected schedule does not yet rewrite the native `linalg`/loop pipeline.
 
 The intended A100 pipeline shares the frontend and verified dialect:
 
@@ -120,8 +134,9 @@ tc/einsum frontend
 ```
 
 Nano v1 owns its optimizer driver instead of depending on a separately bundled
-`mlir-opt`. FileCheck covers round-trip, rejected IR, and `tc`-to-`linalg`; a
-Python/ctypes harness loads native arm64 code and compares it with NumPy.
+`mlir-opt`. FileCheck covers round-trip, rejected IR, and `tc`-to-`linalg`; the
+Python native runtime loads generated arm64 code through `ctypes` and compares
+it with NumPy.
 
 ## Modules
 
@@ -134,13 +149,14 @@ Python/ctypes harness loads native arm64 code and compares it with NumPy.
 | `schedule.py` | Direct schedule generation and target pruning |
 | `compiler.py` | public compile/explain/execute façade |
 | `cpu_backend.py` | independent plan semantics |
+| `native_backend.py` | native Direct lowering, AOT cache, and memref ABI |
 | `tuner.py`, `cache.py` | measurement and persistent target-specific choices |
 | `mlir_emitter.py` | portable semantic MLIR |
 | `tc_emitter.py` | frontend emission of verified `tc.contract` IR |
 | `include/`, `lib/` | `tc` dialect, verifier, and lowering pass |
 | `tools/einsumcc-opt` | project optimizer and upstream pass driver |
 | `target.py` | transparent target models and hardware constraints |
-| `cli.py` | explain, verify, tune, and emit-mlir workflows |
+| `cli.py` | explain, verify, tune, emit-mlir, and run-native workflows |
 
 ## Extension rules
 

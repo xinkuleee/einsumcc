@@ -17,6 +17,9 @@ def TC_ContractOp : TC_Op<"contract", [Pure]> {
 
     The operation owns zero-initialization semantically, so it has no output
     accumulator operand. Lowering materializes that initialization explicitly.
+    The optional `equation` attribute is checked against the indexing maps when
+    present; it is not unchecked display metadata. Nano v1 accepts only dense,
+    unencoded tensor types.
 
     Example:
 

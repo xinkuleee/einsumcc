@@ -27,7 +27,8 @@ if einsumcc-opt "$project_root/test/Dialect/TC/invalid.mlir" -o /dev/null \
 fi
 FileCheck "$project_root/test/Dialect/TC/invalid.mlir" <"$diagnostics"
 
-for source in invalid_extent invalid_broadcast invalid_zero_extent; do
+for source in invalid_extent invalid_broadcast invalid_zero_extent \
+    invalid_equation invalid_equation_syntax invalid_encoding; do
   diagnostics=$project_root/build/$source.log
   if einsumcc-opt "$project_root/test/Dialect/TC/$source.mlir" -o /dev/null \
       2>"$diagnostics"; then

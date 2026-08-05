@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Optional, Sequence
+from pathlib import Path
+from typing import Optional, Sequence, TYPE_CHECKING
 
 import numpy as np
 
@@ -14,6 +15,9 @@ from .problem import ContractionProblem
 from .schedule import DirectSchedule, ScheduleSpace
 from .target import CPU_MODEL, Target
 from .tuner import EmpiricalTuner, TuningResult
+
+if TYPE_CHECKING:
+    from .native_backend import NativeKernel, NativeToolchain
 
 
 @dataclass(frozen=True)
@@ -140,6 +144,37 @@ class Compiler:
                     self.target, fallback, analytical.candidates, measured=False
                 )
         return CompiledContraction(problem, analytical, schedule)
+
+    def compile_native_direct(
+        self,
+        problem: ContractionProblem,
+        *,
+        cache_dir: Optional[Path] = None,
+        toolchain: Optional["NativeToolchain"] = None,
+        timeout_seconds: int = 180,
+    ) -> "NativeKernel":
+        """AOT-compile the MLIR Direct path for the host CPU.
+
+        This entry point is deliberately named ``native_direct``: Nano v1's
+        Python semantic backend executes all three planned strategies, while
+        native MLIR code generation currently implements Direct only. The
+        Direct schedule selected by :meth:`compile` is not yet consumed by
+        this lowering.
+        """
+
+        if self.target.name != CPU_MODEL.name:
+            raise ValueError(
+                "native Direct compilation requires target '{}', got '{}'".format(
+                    CPU_MODEL.name, self.target.name
+                )
+            )
+        from .native_backend import NativeCpuCompiler
+
+        return NativeCpuCompiler(
+            toolchain=toolchain,
+            cache_dir=cache_dir,
+            timeout_seconds=timeout_seconds,
+        ).compile(problem)
 
     def tune_cpu(
         self,

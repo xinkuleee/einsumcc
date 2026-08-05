@@ -3,6 +3,9 @@ import io
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
+
+import numpy as np
 
 from einsumcc.cli import main
 
@@ -65,20 +68,49 @@ class CliTest(unittest.TestCase):
             self.assertIn("tc.contract", destination.read_text(encoding="utf-8"))
 
     def test_emit_lowered_linalg_stage(self):
-        status, output = self.invoke(
-            [
-                "emit-mlir",
-                "mk,kn->mn",
-                "--lhs-shape",
-                "3,4",
-                "--rhs-shape",
-                "4,5",
-                "--stage",
-                "linalg",
-            ]
-        )
+        compiler = mock.Mock()
+        compiler.lower.return_value = "module { linalg.generic }\n"
+        with mock.patch("einsumcc.cli.NativeCpuCompiler", return_value=compiler):
+            status, output = self.invoke(
+                [
+                    "emit-mlir",
+                    "mk,kn->mn",
+                    "--lhs-shape",
+                    "3,4",
+                    "--rhs-shape",
+                    "4,5",
+                    "--stage",
+                    "linalg",
+                ]
+            )
         self.assertEqual(status, 0)
         self.assertIn("linalg.generic", output)
+        compiler.lower.assert_called_once()
+
+    def test_run_native_reports_artifact_and_cache_status(self):
+        class Kernel:
+            library_path = Path("/tmp/einsumcc-test/module.dylib")
+            cache_hit = True
+
+            def run(self, lhs, rhs):
+                return np.einsum("mk,kn->mn", lhs, rhs, dtype=np.float32)
+
+        compiler = mock.Mock()
+        compiler.compile_native_direct.return_value = Kernel()
+        with mock.patch("einsumcc.cli.Compiler", return_value=compiler):
+            status, output = self.invoke(
+                [
+                    "run-native",
+                    "mk,kn->mn",
+                    "--lhs-shape",
+                    "3,4",
+                    "--rhs-shape",
+                    "4,5",
+                ]
+            )
+        self.assertEqual(status, 0)
+        self.assertIn("PASS native-direct", output)
+        self.assertIn("Cache: hit", output)
 
     def test_tune_then_explain_uses_cache(self):
         with tempfile.TemporaryDirectory() as directory:

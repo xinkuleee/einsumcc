@@ -13,7 +13,7 @@ from .benchmark import BenchmarkCorpus, CpuBenchmarkRunner
 from .cache import TuningCache
 from .compiler import Compiler
 from .errors import EinsumCCError
-from .mlir_emitter import MlirEmitter
+from .native_backend import NativeCpuCompiler
 from .problem import ContractionProblem
 from .target import CPU_MODEL, TARGETS, get_target
 from .tc_emitter import TcEmitter
@@ -121,12 +121,39 @@ def _command_tune(arguments: argparse.Namespace) -> int:
 
 
 def _command_emit_mlir(arguments: argparse.Namespace) -> int:
-    emitter = TcEmitter() if arguments.stage == "tc" else MlirEmitter()
-    module = emitter.emit(_problem(arguments), arguments.function)
-    if arguments.output:
-        Path(arguments.output).write_text(module.text, encoding="utf-8")
+    problem = _problem(arguments)
+    if arguments.stage == "tc":
+        rendered = TcEmitter().emit(problem, arguments.function).text
     else:
-        print(module.text, end="")
+        if arguments.function != "contract":
+            raise ValueError(
+                "native lowering currently exports the fixed function name 'contract'"
+            )
+        rendered = NativeCpuCompiler().lower(problem, arguments.stage)
+    if arguments.output:
+        Path(arguments.output).write_text(rendered, encoding="utf-8")
+    else:
+        print(rendered, end="")
+    return 0
+
+
+def _command_run_native(arguments: argparse.Namespace) -> int:
+    problem = _problem(arguments)
+    lhs, rhs = _arrays(problem, arguments.seed)
+    reference = np.einsum(problem.equation.text, lhs, rhs, dtype=np.float32)
+    kernel = Compiler(CPU_MODEL).compile_native_direct(
+        problem, cache_dir=arguments.native_cache
+    )
+    result = kernel.run(lhs, rhs)
+    np.testing.assert_allclose(
+        result, reference, rtol=arguments.rtol, atol=arguments.atol
+    )
+    maximum = float(np.max(np.abs(result - reference))) if result.size else float(
+        np.abs(result - reference)
+    )
+    print("PASS native-direct max_abs_error={:.6g}".format(maximum))
+    print("Artifact: {}".format(kernel.library_path))
+    print("Cache: {}".format("hit" if kernel.cache_hit else "miss"))
     return 0
 
 
@@ -173,13 +200,27 @@ def build_parser() -> argparse.ArgumentParser:
     tune.set_defaults(handler=_command_tune)
 
     emit = subparsers.add_parser(
-        "emit-mlir", help="emit tc.contract or lowered semantic MLIR"
+        "emit-mlir", help="emit tc.contract, lowered MLIR, or LLVM IR"
     )
     _add_problem_arguments(emit)
     emit.add_argument("--function", default="contract")
-    emit.add_argument("--stage", choices=("tc", "linalg"), default="tc")
+    emit.add_argument(
+        "--stage", choices=("tc", "linalg", "llvm", "llvm-ir"), default="tc"
+    )
     emit.add_argument("-o", "--output")
     emit.set_defaults(handler=_command_emit_mlir)
+
+    native = subparsers.add_parser(
+        "run-native", help="compile and execute the MLIR Direct path on the host CPU"
+    )
+    _add_problem_arguments(native)
+    native.add_argument("--seed", type=int, default=0)
+    native.add_argument("--rtol", type=float, default=1.0e-4)
+    native.add_argument("--atol", type=float, default=1.0e-5)
+    native.add_argument(
+        "--native-cache", type=Path, help="native artifact cache directory"
+    )
+    native.set_defaults(handler=_command_run_native)
 
     benchmark = subparsers.add_parser(
         "benchmark", help="run a versioned CPU workload corpus"
