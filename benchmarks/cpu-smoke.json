@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "name": "cpu-smoke",
+  "description": "Small semantic workloads for laptop regression testing; not an A100 performance suite.",
+  "cases": [
+    {
+      "name": "matmul",
+      "equation": "mk,kn->mn",
+      "lhs_shape": [16, 8],
+      "rhs_shape": [8, 12]
+    },
+    {
+      "name": "batched-matmul",
+      "equation": "bij,bjk->bik",
+      "lhs_shape": [2, 8, 6],
+      "rhs_shape": [2, 6, 10]
+    },
+    {
+      "name": "multiple-reductions",
+      "equation": "aij,jib->ab",
+      "lhs_shape": [3, 4, 5],
+      "rhs_shape": [5, 4, 6]
+    },
+    {
+      "name": "course-layout",
+      "equation": "aijd,bckd->abcijk",
+      "lhs_shape": [2, 2, 2, 3],
+      "rhs_shape": [2, 2, 2, 3]
+    },
+    {
+      "name": "strided-left",
+      "equation": "mk,kn->mn",
+      "lhs_shape": [4, 5],
+      "rhs_shape": [5, 6],
+      "lhs_strides": [10, 2]
+    }
+  ]
+}
