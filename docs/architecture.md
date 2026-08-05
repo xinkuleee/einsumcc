@@ -18,8 +18,13 @@ explicit einsum + static shapes/strides
        +---------+----------+
        |                    |
        v                    v
- layout legality       MLIR emission
-       |               (linalg.generic)
+ layout legality       tc.contract emission
+       |                    |
+       |                    v
+       |               tc verifier/pass
+       |                    |
+       |                    v
+       |               linalg.generic
        v
  cost all legal plans
        |
@@ -90,9 +95,20 @@ cannot override an A100 decision.
 
 ## MLIR boundary
 
-`MlirEmitter` generates the semantic contraction as a `linalg.generic` with
-affine indexing maps and parallel/reduction iterator annotations. This is not
-yet target lowering. The intended A100 pipeline is:
+`TcEmitter` generates the project-owned `tc.contract` operation. Its C++
+verifier independently checks ranked static FP32 tensors, map ranks, exact
+B/M/N/K memberships, iterator classes, and loop extents. The
+`tc-contract-to-linalg` pass materializes zero initialization and a
+`linalg.generic` multiply-add body.
+
+The tested macOS Direct path is:
+
+```text
+Einstein frontend -> tc.contract -> linalg.generic -> bufferization
+  -> scf/cf loops -> LLVM dialect -> LLVM IR -> native arm64
+```
+
+The intended A100 pipeline shares the frontend and verified dialect:
 
 ```text
 tc/einsum frontend
@@ -103,8 +119,9 @@ tc/einsum frontend
      -> Packed-GEMM: generated pack kernels -> cuBLAS -> unpack
 ```
 
-Nano v1 emits portable MLIR text and golden-tests it on macOS. Tests additionally
-parse it with `mlir-opt` when that executable is present.
+Nano v1 owns its optimizer driver instead of depending on a separately bundled
+`mlir-opt`. FileCheck covers round-trip, rejected IR, and `tc`-to-`linalg`; a
+Python/ctypes harness loads native arm64 code and compares it with NumPy.
 
 ## Modules
 
@@ -119,6 +136,9 @@ parse it with `mlir-opt` when that executable is present.
 | `cpu_backend.py` | independent plan semantics |
 | `tuner.py`, `cache.py` | measurement and persistent target-specific choices |
 | `mlir_emitter.py` | portable semantic MLIR |
+| `tc_emitter.py` | frontend emission of verified `tc.contract` IR |
+| `include/`, `lib/` | `tc` dialect, verifier, and lowering pass |
+| `tools/einsumcc-opt` | project optimizer and upstream pass driver |
 | `target.py` | transparent target models and hardware constraints |
 | `cli.py` | explain, verify, tune, and emit-mlir workflows |
 
@@ -132,4 +152,3 @@ parse it with `mlir-opt` when that executable is present.
    benchmarked.
 6. Performance claims require the real target; CPU timings cannot stand in for
    A100 measurements.
-

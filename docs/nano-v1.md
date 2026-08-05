@@ -32,7 +32,8 @@ the verifier rather than silently miscompiled.
 5. Generate/prune Direct schedules and expose an empirical tuning hook.
 6. Cache a measured plan/schedule using a stable workload key.
 7. Execute CPU semantics and compare all legal plans against a reference.
-8. Emit semantic `linalg.generic` MLIR for the contraction.
+8. Emit a verified `tc.contract`, lower it to initialized `linalg.generic`,
+   then lower a static contiguous CPU case to native code.
 
 ## Completion gates
 
@@ -40,14 +41,18 @@ the verifier rather than silently miscompiled.
 - every supported index pattern has differential CPU correctness tests;
 - plan-selection tests cover Direct, zero-copy GEMM, and packed GEMM;
 - tuning cache round-trips without losing workload identity;
-- emitted MLIR has golden tests and is validated with `mlir-opt` when present;
+- the project-owned `einsumcc-opt` parses/verifies `tc.contract` and has
+  positive, negative, and lowering tests;
+- frontend-generated matrix, batch, permuted, multi-reduction, scalar, and
+  course contractions reach LLVM IR and pass native arm64 differential tests;
 - the course contraction appears in both tests and the CLI documentation;
 - architecture and extension points are documented.
 
 ## Deferred to Mini
 
 - dynamically shaped tensors;
-- arbitrary device-buffer ownership and runtime ABI;
+- a general Python/JIT runtime and arbitrary device-buffer ownership (Nano has
+  a documented static memref smoke-test ABI);
 - FP16/BF16 and mixed-precision accumulation;
 - Tensor Core-specific Direct lowering;
 - contraction/epilogue fusion;

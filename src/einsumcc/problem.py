@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 import hashlib
 import json
 from math import prod
+from types import MappingProxyType
 from typing import Dict, Mapping, Optional, Sequence, Tuple, Union
 
 from .equation import Equation
@@ -109,6 +110,9 @@ class ContractionProblem:
         dtype: str = "f32",
     ) -> "ContractionProblem":
         parsed = Equation.parse(equation) if isinstance(equation, str) else equation
+        # Be defensive for Equation-like objects created by older callers or
+        # deserializers: semantic construction always rechecks its boundary.
+        parsed.verify_structure()
         lhs = TensorSpec.create(lhs_shape, lhs_strides, dtype)
         rhs = TensorSpec.create(rhs_shape, rhs_strides, dtype)
         if len(parsed.lhs) != len(lhs.shape):
@@ -151,7 +155,7 @@ class ContractionProblem:
             classified["right_free"],
             classified["reduction"],
         )
-        return cls(parsed, lhs, rhs, output, groups, extents)
+        return cls(parsed, lhs, rhs, output, groups, MappingProxyType(dict(extents)))
 
     def extent_product(self, labels: Sequence[str]) -> int:
         return prod(self.extents[label] for label in labels)

@@ -7,12 +7,15 @@ on macOS.
 
 ```bash
 make test
+make test-mlir
+make test-cpu-codegen
 make demo
 make check
 ```
 
-The test suite uses `unittest`, so no additional test framework is required.
-One optional test invokes `mlir-opt`; it is skipped when MLIR is unavailable.
+The Python suite uses `unittest`. The MLIR suite uses the pinned `FileCheck`
+and the project's own optimizer. The native smoke test also needs the Apple
+Command Line Tools C compiler.
 Install the pinned Apple Silicon toolchain used by this project with:
 
 ```bash
@@ -25,6 +28,20 @@ tracked by Git. The bootstrap script verifies the published SHA-256 digest.
 This Triton archive is a development toolchain: it supplies MLIR headers,
 libraries, CMake configuration, `mlir-tblgen`, and `mlir-translate`. EinsumCC
 builds its own optimizer driver instead of assuming a bundled `mlir-opt`.
+If `cmake` and `ninja` are not installed globally, they may be installed into
+`.deps/build-tools`; `scripts/build-mlir.sh` detects that isolated location.
+For example: `python3 -m pip install --target .deps/build-tools cmake ninja`.
+
+The complete local compiler checks are:
+
+```bash
+./scripts/build-mlir.sh
+./scripts/test-mlir.sh
+./scripts/test-cpu-codegen.sh
+```
+
+The CPU codegen smoke test starts from the CLI's Einstein input and crosses the
+custom dialect boundary before compiling LLVM IR to a native arm64 executable.
 
 macOS system Python may place bytecode under `~/Library/Caches`. In restricted
 environments, either disable bytecode or redirect its cache:
@@ -40,6 +57,8 @@ Run:
 
 ```bash
 make check
+make test-mlir
+make test-cpu-codegen
 git diff --check
 git status --short
 ```
@@ -60,14 +79,12 @@ semantics and differential correctness.
 
 ## A100 continuation checklist
 
-1. Pin an LLVM/MLIR revision in build documentation.
-2. Parse and verify emitted MLIR with that toolchain.
-3. Introduce an explicit GPU runtime interface; do not pass Python arrays into
+1. Introduce an explicit GPU runtime interface; do not pass Python arrays into
    target-independent IR.
-4. Implement Direct lowering first for contiguous FP32 inputs.
-5. Add a cuBLAS wrapper for GEMM-view and Packed-GEMM.
-6. Differential-test every generated kernel against the CPU backend.
-7. Calibrate target model constants from reproducible A100 measurements.
-8. Store GPU tuning records under a hardware/toolchain-specific target name.
-9. Add cuTENSOR and course starter kernels as external baselines.
-10. Report latency, GFLOP/s, workspace, selected plan, and selector regret.
+2. Implement Direct GPU lowering first for contiguous FP32 inputs.
+3. Add a cuBLAS wrapper for GEMM-view and Packed-GEMM.
+4. Differential-test every generated kernel against the CPU backend.
+5. Calibrate target model constants from reproducible A100 measurements.
+6. Store GPU tuning records under a hardware/toolchain-specific target name.
+7. Add cuTENSOR and course starter kernels as external baselines.
+8. Report latency, GFLOP/s, workspace, selected plan, and selector regret.

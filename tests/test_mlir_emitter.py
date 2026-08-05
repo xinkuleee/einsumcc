@@ -1,5 +1,4 @@
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -36,14 +35,28 @@ class MlirEmitterTest(unittest.TestCase):
         self.assertEqual(module.text.count('"parallel"'), 6)
         self.assertEqual(module.text.count('"reduction"'), 1)
 
-    @unittest.skipUnless(shutil.which("mlir-opt"), "mlir-opt is not installed")
-    def test_mlir_opt_parses_emitted_module_when_available(self):
+    def test_rejects_non_bare_function_symbols(self):
+        problem = ContractionProblem.create("mk,kn->mn", (3, 4), (4, 5))
+        for name in ("9contract", "contréact", "contract-name"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "ASCII MLIR"):
+                MlirEmitter().emit(problem, name)
+
+    @unittest.skipUnless(
+        Path("build/tools/einsumcc-opt/einsumcc-opt").is_file(),
+        "einsumcc-opt has not been built",
+    )
+    def test_einsumcc_opt_parses_emitted_linalg_module(self):
         problem = ContractionProblem.create("mk,kn->mn", (3, 4), (4, 5))
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "module.mlir"
             source.write_text(MlirEmitter().emit(problem).text, encoding="utf-8")
             subprocess.run(
-                ["mlir-opt", str(source), "-o", "/dev/null"],
+                [
+                    "build/tools/einsumcc-opt/einsumcc-opt",
+                    str(source),
+                    "-o",
+                    "/dev/null",
+                ],
                 check=True,
                 capture_output=True,
                 text=True,

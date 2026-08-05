@@ -1,10 +1,19 @@
-.PHONY: test demo check benchmark
+.PHONY: test test-mlir test-cpu-codegen build-mlir demo check benchmark
 
 PYTHON ?= python3 -B
 export PYTHONPATH := src
 
 test:
 	$(PYTHON) -m unittest discover -s tests -v
+
+build-mlir:
+	./scripts/build-mlir.sh
+
+test-mlir: build-mlir
+	./scripts/test-mlir.sh
+
+test-cpu-codegen: build-mlir
+	./scripts/test-cpu-codegen.sh
 
 demo:
 	$(PYTHON) -m einsumcc explain 'aijd,bckd->abcijk' --lhs-shape 2,3,4,5 --rhs-shape 6,7,8,5

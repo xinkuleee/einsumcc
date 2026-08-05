@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import fcntl
 import json
 import math
 import os
@@ -138,26 +139,43 @@ class TuningCache:
         return self._load().get(self._entry_key(workload_key, target))
 
     def store(self, record: TuningRecord) -> None:
-        records = self._load()
-        records[self._entry_key(record.workload_key, record.target)] = record
-        payload = {
-            "schema": CACHE_SCHEMA,
-            "records": {key: value.to_json() for key, value in sorted(records.items())},
-        }
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.path.with_name(self.path.name + ".lock")
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=str(self.path.parent),
-                prefix=self.path.name + ".",
-                suffix=".tmp",
-                delete=False,
-            ) as handle:
-                json.dump(payload, handle, indent=2, sort_keys=True)
-                handle.write("\n")
-                temporary = Path(handle.name)
-            os.replace(str(temporary), str(self.path))
+            # Atomic rename protects readers from partial JSON.  The advisory
+            # lock additionally makes the entire read-modify-replace sequence
+            # transactional across tuner processes.  Lock a stable sidecar,
+            # not the replaced data inode.
+            with lock_path.open("a+b") as lock_handle:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+                records = self._load()
+                records[self._entry_key(record.workload_key, record.target)] = record
+                payload = {
+                    "schema": CACHE_SCHEMA,
+                    "records": {
+                        key: value.to_json() for key, value in sorted(records.items())
+                    },
+                }
+                temporary: Optional[Path] = None
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        mode="w",
+                        encoding="utf-8",
+                        dir=str(self.path.parent),
+                        prefix=self.path.name + ".",
+                        suffix=".tmp",
+                        delete=False,
+                    ) as handle:
+                        json.dump(payload, handle, indent=2, sort_keys=True)
+                        handle.write("\n")
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                        temporary = Path(handle.name)
+                    os.replace(str(temporary), str(self.path))
+                finally:
+                    if temporary is not None and temporary.exists():
+                        temporary.unlink()
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         except OSError as error:
             raise CacheError("cannot update tuning cache '{}': {}".format(self.path, error)) from error
 

@@ -116,11 +116,29 @@ class Compiler:
                 )
                 return CompiledContraction(problem, decision, record.schedule, record)
 
-        schedule = (
-            self.schedule_space.default(problem, self.target)
-            if analytical.selected.kind == PlanKind.DIRECT
-            else None
-        )
+        schedule = None
+        if analytical.selected.kind == PlanKind.DIRECT:
+            ranked = self.schedule_space.ranked(problem, self.target, limit=1)
+            if ranked:
+                schedule = ranked[0]
+            elif force == PlanKind.DIRECT:
+                raise ValueError(
+                    "forced Direct plan has no legal schedule for target '{}'".format(
+                        self.target.name
+                    )
+                )
+            else:
+                fallback = min(
+                    (
+                        candidate
+                        for candidate in analytical.candidates
+                        if candidate.legal and candidate.kind != PlanKind.DIRECT
+                    ),
+                    key=lambda candidate: candidate.estimated_us,
+                )
+                analytical = PlanDecision(
+                    self.target, fallback, analytical.candidates, measured=False
+                )
         return CompiledContraction(problem, analytical, schedule)
 
     def tune_cpu(

@@ -8,7 +8,7 @@ The project is intentionally CPU-first: parsing, legality, planning, tuning,
 and numerical semantics are testable on a development laptop. The same IR and
 plan interfaces are designed to feed an MLIR/CUDA backend on an A100 machine.
 
-## Current milestone: Nano v1 core
+## Current milestone: Nano v1 CPU compiler
 
 - explicit `einsum` syntax such as `bij,bjk->bik`;
 - binary contractions with batch, free, and multiple reduction indices;
@@ -17,7 +17,11 @@ plan interfaces are designed to feed an MLIR/CUDA backend on an A100 machine.
 - a target-aware analytical cost model and explainable plan selection;
 - schedule-space generation, empirical tuning hooks, and a JSON tuning cache;
 - CPU reference implementations for differential correctness tests;
-- emission of semantic MLIR using `linalg.generic`.
+- a TableGen-defined `tc` dialect and verified `tc.contract` operation;
+- `tc.contract` to `linalg.generic` conversion in the project-owned
+  `einsumcc-opt` driver;
+- a tested macOS path from Einstein notation through loops and LLVM IR to a
+  native arm64 executable.
 
 FP32 is the executable Nano v1 datatype. FP16/BF16, Tensor Cores, arbitrary
 GPU layouts, and fused epilogues are later milestones.
@@ -29,6 +33,8 @@ dependency.
 
 ```bash
 make test
+make test-mlir
+make test-cpu-codegen
 make demo
 make check
 make benchmark
@@ -50,12 +56,17 @@ PYTHONPATH=src python3 -m einsumcc verify \
   'bij,bjk->bik' --lhs-shape 2,3,4 --rhs-shape 2,4,5
 ```
 
-Emit the semantic MLIR module:
+Emit the semantic `tc.contract` module (use `--stage linalg` to inspect its
+frontend-only expansion):
 
 ```bash
 PYTHONPATH=src python3 -m einsumcc emit-mlir \
   'mk,kn->mn' --lhs-shape 32,16 --rhs-shape 16,64
 ```
+
+`make test-cpu-codegen` performs the real compiler smoke test: Python Einstein
+frontend → `tc.contract` → `linalg` → bufferization → loops → LLVM dialect →
+LLVM IR → native arm64 binary, then checks its numeric matrix result.
 
 ## Documentation
 

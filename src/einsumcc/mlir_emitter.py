@@ -10,9 +10,13 @@ installed on the development Mac.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Sequence, Tuple
 
 from .problem import ContractionProblem, TensorSpec
+
+
+_BARE_SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _tensor_type(spec: TensorSpec) -> str:
@@ -39,8 +43,10 @@ class MlirEmitter:
     """Translate target-independent IR to a `linalg.generic` module."""
 
     def emit(self, problem: ContractionProblem, function_name: str = "contract") -> MlirModule:
-        if not function_name or not function_name.replace("_", "a").isalnum():
-            raise ValueError("function name must be an alphanumeric MLIR symbol")
+        if not _BARE_SYMBOL.fullmatch(function_name):
+            raise ValueError(
+                "function name must be an ASCII MLIR symbol beginning with a letter or underscore"
+            )
 
         loop_labels = problem.equation.output + problem.groups.reduction
         lhs_map = _affine_map(loop_labels, problem.equation.lhs)

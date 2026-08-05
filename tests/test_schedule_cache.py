@@ -15,6 +15,10 @@ from einsumcc.target import A100_MODEL, CPU_MODEL
 
 
 class ScheduleAndCacheTest(unittest.TestCase):
+    def test_schedule_values_must_be_positive(self):
+        with self.assertRaisesRegex(ValueError, "positive"):
+            DirectSchedule(-1, 8, 4, 1, 1)
+
     def test_schedule_space_prunes_vector_misalignment(self):
         problem = ContractionProblem.create("mk,kn->mn", (8, 7), (7, 8))
         space = ScheduleSpace(
@@ -79,6 +83,25 @@ class ScheduleAndCacheTest(unittest.TestCase):
         with self.assertRaisesRegex(CacheError, "finite"):
             TuningRecord.create(
                 "abc", CPU_MODEL.name, PlanKind.DIRECT, float("nan"), (1.0,)
+            )
+
+    def test_cache_rejects_non_object_json_shapes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tuning.json"
+            for payload in (None, [], {"schema": 1, "records": []}):
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.subTest(payload=payload), self.assertRaises(CacheError):
+                    TuningCache(path).records()
+
+    def test_compiler_falls_back_when_direct_has_no_legal_schedule(self):
+        problem = ContractionProblem.create("mk,kn->mn", (3, 4), (4, 5))
+        impossible = ScheduleSpace(block_m=(), block_n=(), block_k=())
+        compiled = Compiler(CPU_MODEL, schedule_space=impossible).compile(problem)
+        self.assertNotEqual(compiled.decision.selected.kind, PlanKind.DIRECT)
+        self.assertIsNone(compiled.schedule)
+        with self.assertRaisesRegex(ValueError, "no legal schedule"):
+            Compiler(CPU_MODEL, schedule_space=impossible).compile(
+                problem, force=PlanKind.DIRECT
             )
 
     def test_compiler_ignores_schedule_attached_to_gemm_record(self):

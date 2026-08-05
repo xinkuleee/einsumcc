@@ -62,7 +62,23 @@ class CliTest(unittest.TestCase):
                 ]
             )
             self.assertEqual(status, 0)
-            self.assertIn("linalg.generic", destination.read_text(encoding="utf-8"))
+            self.assertIn("tc.contract", destination.read_text(encoding="utf-8"))
+
+    def test_emit_lowered_linalg_stage(self):
+        status, output = self.invoke(
+            [
+                "emit-mlir",
+                "mk,kn->mn",
+                "--lhs-shape",
+                "3,4",
+                "--rhs-shape",
+                "4,5",
+                "--stage",
+                "linalg",
+            ]
+        )
+        self.assertEqual(status, 0)
+        self.assertIn("linalg.generic", output)
 
     def test_tune_then_explain_uses_cache(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -105,4 +121,3 @@ class CliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

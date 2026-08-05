@@ -1,5 +1,6 @@
 import unittest
 
+from einsumcc.equation import Equation
 from einsumcc.errors import VerificationError
 from einsumcc.problem import ContractionProblem, TensorSpec, contiguous_strides
 
@@ -42,7 +43,19 @@ class ProblemTest(unittest.TestCase):
         self.assertEqual(contiguous_strides((2, 3, 4)), (12, 4, 1))
         self.assertTrue(TensorSpec.create((2, 3, 4)).is_c_contiguous)
 
+    def test_direct_equation_construction_cannot_bypass_verification(self):
+        with self.assertRaisesRegex(VerificationError, "repeats an index"):
+            Equation(("i", "i"), ("i", "j"), ("i", "j"))
+        with self.assertRaisesRegex(VerificationError, "single ASCII letters"):
+            Equation(("mk",), ("k", "n"), ("m", "n"))
+
+    def test_problem_extents_are_deeply_immutable(self):
+        problem = ContractionProblem.create("mk,kn->mn", (3, 4), (4, 5))
+        original_key = problem.workload_key
+        with self.assertRaises(TypeError):
+            problem.extents["m"] = 99
+        self.assertEqual(problem.workload_key, original_key)
+
 
 if __name__ == "__main__":
     unittest.main()
-

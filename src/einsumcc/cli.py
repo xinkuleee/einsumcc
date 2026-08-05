@@ -16,6 +16,7 @@ from .errors import EinsumCCError
 from .mlir_emitter import MlirEmitter
 from .problem import ContractionProblem
 from .target import CPU_MODEL, TARGETS, get_target
+from .tc_emitter import TcEmitter
 
 
 def _integers(text: str) -> Tuple[int, ...]:
@@ -120,7 +121,8 @@ def _command_tune(arguments: argparse.Namespace) -> int:
 
 
 def _command_emit_mlir(arguments: argparse.Namespace) -> int:
-    module = MlirEmitter().emit(_problem(arguments), arguments.function)
+    emitter = TcEmitter() if arguments.stage == "tc" else MlirEmitter()
+    module = emitter.emit(_problem(arguments), arguments.function)
     if arguments.output:
         Path(arguments.output).write_text(module.text, encoding="utf-8")
     else:
@@ -170,9 +172,12 @@ def build_parser() -> argparse.ArgumentParser:
     tune.add_argument("--cache", default=".einsumcc-cache/tuning-v1.json")
     tune.set_defaults(handler=_command_tune)
 
-    emit = subparsers.add_parser("emit-mlir", help="emit semantic linalg.generic MLIR")
+    emit = subparsers.add_parser(
+        "emit-mlir", help="emit tc.contract or lowered semantic MLIR"
+    )
     _add_problem_arguments(emit)
     emit.add_argument("--function", default="contract")
+    emit.add_argument("--stage", choices=("tc", "linalg"), default="tc")
     emit.add_argument("-o", "--output")
     emit.set_defaults(handler=_command_emit_mlir)
 

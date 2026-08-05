@@ -24,6 +24,16 @@ class Equation:
     rhs: Tuple[str, ...]
     output: Tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        # `Equation` is public and can be constructed without going through
+        # `parse`.  Normalize and verify that path as well; otherwise a caller
+        # could smuggle diagonal or multi-character labels into the semantic
+        # IR and make `Equation.text` describe different semantics.
+        object.__setattr__(self, "lhs", tuple(self.lhs))
+        object.__setattr__(self, "rhs", tuple(self.rhs))
+        object.__setattr__(self, "output", tuple(self.output))
+        self.verify_structure()
+
     @classmethod
     def parse(cls, text: str) -> "Equation":
         """Parse and structurally verify an explicit binary equation.
@@ -52,12 +62,31 @@ class Equation:
                     "{} repeats an index; diagonal semantics are not supported".format(name)
                 )
 
-        equation = cls(tuple(lhs), tuple(rhs), tuple(output))
-        equation.verify_structure()
-        return equation
+        return cls(tuple(lhs), tuple(rhs), tuple(output))
 
     def verify_structure(self) -> None:
         """Verify that every label belongs to the supported B/M/N/K model."""
+
+        for name, labels, allow_empty in (
+            ("left input", self.lhs, False),
+            ("right input", self.rhs, False),
+            ("output", self.output, True),
+        ):
+            if not allow_empty and not labels:
+                raise VerificationError("{} subscripts cannot be empty".format(name))
+            if any(
+                not isinstance(label, str)
+                or len(label) != 1
+                or not ("A" <= label <= "Z" or "a" <= label <= "z")
+                for label in labels
+            ):
+                raise VerificationError(
+                    "{} indices must be single ASCII letters".format(name)
+                )
+            if len(labels) != len(set(labels)):
+                raise VerificationError(
+                    "{} repeats an index; diagonal semantics are not supported".format(name)
+                )
 
         if not (1 <= len(self.lhs) <= 6 and 1 <= len(self.rhs) <= 6):
             raise VerificationError("each input rank must be between 1 and 6")
@@ -126,4 +155,3 @@ class Equation:
             "right_free": right_free,
             "reduction": reduction,
         }
-
