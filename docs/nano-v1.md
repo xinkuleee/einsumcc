@@ -1,5 +1,7 @@
 # Nano v1 scope
 
+Nano v1 is the implementation milestone published as package version `0.1.0`.
+
 Nano v1 is a complete but deliberately narrow compiler loop. It is not a
 production replacement for cuTENSOR.
 

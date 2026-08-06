@@ -99,6 +99,8 @@ contractions against NumPy, including positive-stride inputs.
   continuation checklist.
 - [Benchmarks](docs/benchmarks.md) defines reproducible workload and result
   formats.
+- [v0.1 technical and interview guide](docs/interview-guide.zh-CN.md) records
+  the core algorithms, design trade-offs, honest scope, and review questions.
 
 ## Repository status
 
