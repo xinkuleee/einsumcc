@@ -1,4 +1,4 @@
-"""Reproducible CPU benchmark corpus and machine-readable result schema."""
+"""Reproducible semantic and native CPU benchmark corpora."""
 
 from __future__ import annotations
 
@@ -9,14 +9,21 @@ import platform
 from pathlib import Path
 from statistics import median
 from time import perf_counter_ns
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple, TYPE_CHECKING
 
 import numpy as np
 
 from .compiler import Compiler
 from .cpu_backend import execute
+from .cache import TuningCache
+from .native_backend import NativeCpuCompiler
 from .problem import ContractionProblem
+from .schedule import ScheduleSpace
 from .target import CPU_MODEL
+from .tuner import NativeDirectTuner
+
+if TYPE_CHECKING:
+    from .native_backend import NativeToolchain
 
 CORPUS_SCHEMA = 1
 RESULT_SCHEMA = 1
@@ -193,4 +200,143 @@ class CpuBenchmarkRunner:
             "cases": [
                 self.run_case(case, index) for index, case in enumerate(corpus.cases)
             ],
+        }
+
+
+class NativeBenchmarkRunner:
+    """Tune generated Direct dylibs for every case in a versioned corpus.
+
+    One resolved native compiler is shared by the whole run. Consequently all
+    cases have the same hardware/toolchain target identity, artifact cache, and
+    timing scope. Each winner is persisted independently under the workload
+    and target-scoped tuning-cache key.
+    """
+
+    def __init__(
+        self,
+        *,
+        warmups: int = 1,
+        repeats: int = 5,
+        max_schedules: int = 12,
+        seed: int = 0,
+        rtol: float = 1.0e-4,
+        atol: float = 1.0e-5,
+        native_cache: Optional[Path] = None,
+        tuning_cache: Optional[TuningCache] = None,
+        toolchain: Optional["NativeToolchain"] = None,
+        timeout_seconds: int = 180,
+        schedule_space: Optional[ScheduleSpace] = None,
+        native_compiler: Optional[NativeCpuCompiler] = None,
+    ) -> None:
+        if warmups < 0 or repeats <= 0 or max_schedules <= 0:
+            raise ValueError("invalid native benchmark iteration counts")
+        if rtol < 0 or atol < 0:
+            raise ValueError("native benchmark tolerances must be non-negative")
+        if timeout_seconds <= 0:
+            raise ValueError("native benchmark timeout must be positive")
+        if native_compiler is not None and (
+            native_cache is not None or toolchain is not None
+        ):
+            raise ValueError(
+                "native_compiler cannot be combined with native_cache or toolchain"
+            )
+        self.warmups = warmups
+        self.repeats = repeats
+        self.max_schedules = max_schedules
+        self.seed = seed
+        self.rtol = float(rtol)
+        self.atol = float(atol)
+        self.schedule_space = schedule_space or ScheduleSpace()
+        self.native_compiler = native_compiler or NativeCpuCompiler(
+            toolchain=toolchain,
+            cache_dir=native_cache,
+            timeout_seconds=timeout_seconds,
+        )
+        self.tuning_cache = tuning_cache
+
+    def _run_case(
+        self, case: BenchmarkCase, case_index: int
+    ) -> Tuple[Mapping[str, object], Mapping[str, object], str]:
+        problem = case.problem()
+        rng = np.random.default_rng(self.seed + case_index)
+        lhs = _random_array(problem.lhs.shape, problem.lhs.strides, rng)
+        rhs = _random_array(problem.rhs.shape, problem.rhs.strides, rng)
+        result = NativeDirectTuner(
+            self.native_compiler,
+            self.schedule_space,
+            warmups=self.warmups,
+            repeats=self.repeats,
+            max_schedules=self.max_schedules,
+            rtol=self.rtol,
+            atol=self.atol,
+        ).tune(problem, lhs, rhs)
+        if self.tuning_cache is not None:
+            self.tuning_cache.store(result.to_record(problem))
+        best_gflops = (
+            None
+            if result.best.median_us == 0.0
+            else problem.flops / (result.best.median_us * 1000.0)
+        )
+        baseline_gflops = (
+            None
+            if result.baseline.median_us == 0.0
+            else problem.flops / (result.baseline.median_us * 1000.0)
+        )
+        entry = {
+            "name": case.name,
+            "equation": problem.equation.text,
+            "lhs_shape": list(problem.lhs.shape),
+            "rhs_shape": list(problem.rhs.shape),
+            "lhs_strides": list(problem.lhs.strides),
+            "rhs_strides": list(problem.rhs.strides),
+            "workload_key": problem.workload_key,
+            "flops": problem.flops,
+            "best": result.best.to_json(),
+            "best_gflops": best_gflops,
+            "baseline": result.baseline.to_json(),
+            "baseline_gflops": baseline_gflops,
+            "speedup_vs_baseline": result.speedup_vs_baseline,
+            "measurements": [item.to_json() for item in result.measurements],
+        }
+        return entry, result.environment, result.target
+
+    def run(self, corpus: BenchmarkCorpus) -> Mapping[str, object]:
+        cases = []
+        environment: Optional[Mapping[str, object]] = None
+        target: Optional[str] = None
+        for index, case in enumerate(corpus.cases):
+            entry, case_environment, case_target = self._run_case(case, index)
+            if environment is None:
+                environment = case_environment
+                target = case_target
+            elif case_environment != environment or case_target != target:
+                raise RuntimeError(
+                    "native benchmark target changed during a corpus run"
+                )
+            cases.append(entry)
+        return {
+            "schema": RESULT_SCHEMA,
+            "kind": "native-direct-corpus",
+            "corpus": corpus.name,
+            "description": corpus.description,
+            "target": target,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "environment": environment,
+            "configuration": {
+                "warmups": self.warmups,
+                "repeats": self.repeats,
+                "max_schedules": self.max_schedules,
+                "seed": self.seed,
+                "rtol": self.rtol,
+                "atol": self.atol,
+                "baseline_definition": (
+                    "first statically ranked distinct schedule"
+                ),
+                "timing_unit": "microseconds",
+            },
+            "native_artifact_cache": str(self.native_compiler.cache_dir),
+            "tuning_cache": (
+                None if self.tuning_cache is None else str(self.tuning_cache.path)
+            ),
+            "cases": cases,
         }

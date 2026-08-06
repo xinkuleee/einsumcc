@@ -17,6 +17,10 @@ backend. It builds on the Nano v1 frontend, planner, semantic backends, custom
   tiled reduction loops.
 - Partial tiles lower through `affine.min` and `memref.subview` to LLVM. The
   pinned LLVM 23 `clang` consumes the emitted LLVM IR.
+- The final `clang -O2` stage is allowed to perform target-aware loop
+  autovectorization. The end-to-end gate proves that a regular 64x64 matmul
+  emits `<4 x float>` SIMD on the pinned Apple arm64 toolchain. This is an
+  observed backend optimization, not schedule-controlled MLIR Vector lowering.
 - Raw schedules, expanded tile sizes, the complete pipeline, workload, and
   toolchain/host identity participate in artifact cache identity and manifests.
 - `NativeInvocation` validates and binds the ranked-memref ABI once, then
@@ -26,14 +30,17 @@ backend. It builds on the Nano v1 frontend, planner, semantic backends, custom
   median, and writes a reusable hardware/toolchain-scoped tuning record.
 - `emit-mlir --stage scheduled`, `run-native`, and `tune-native` expose the
   pipeline, explicit schedules, cache reuse, and machine-readable reports.
+- `benchmark-native` runs the same correctness-first tuning protocol over a
+  versioned five-workload native corpus and reports latency and GFLOP/s.
 
 ## Tile projection
 
-For one logical group with extents $(d_0,ldots,d_r)$ and collapsed budget $T$,
-projection walks from $d_r$ toward $d_0$. At each dimension it chooses
+For one logical group with extents $(d_0, \ldots, d_r)$ and collapsed budget
+$T$, projection walks from $d_r$ toward $d_0$. At each dimension it chooses
 
 $$
-t_i = min(d_i, R),qquad R leftarrow max(1,lfloor R/t_ifloor),
+t_i = \min(d_i, R), \qquad
+R \leftarrow \max\left(1, \left\lfloor \frac{R}{t_i} \right\rfloor\right),
 $$
 
 starting with $R=T$. The product never exceeds $T$. For M extents $(2,3,4)$
@@ -112,6 +119,14 @@ PYTHONPATH=src python3 -m einsumcc run-native \
   --tuning-cache .einsumcc-cache/tuning-native-mini-v0.1.json
 ```
 
+Benchmark the versioned native corpus:
+
+```bash
+PYTHONPATH=src python3 -m einsumcc benchmark-native \
+  benchmarks/native-mini-v0.1.json --repeats 20 --max-schedules 8 \
+  -o native-results.json
+```
+
 ## Verification matrix
 
 The native differential suite covers ordinary matmul, batched contraction,
@@ -125,6 +140,7 @@ high-rank contraction, and positive-stride inputs. Separate tests cover:
 - reusable bound invocations;
 - artifact corruption, dangling symlinks, and concurrent population;
 - native candidate deduplication, correctness, samples, and cache records.
+- LLVM-backend SIMD formation on one regular workload.
 
 Run the complete local gate with:
 
@@ -138,11 +154,12 @@ git diff --check
 ## Honest boundary
 
 Mini v0.1 is a real small compiler, not a production CPU or GPU kernel system.
-It does not implement native GEMM-view/Packed-GEMM calls, vectorization, loop
-interchange, multithreading, dynamic shapes, CUDA, GPU/NVVM, Tensor Cores, or
-mixed precision. `threads` and `vector_width` are rejected unless both are one;
-they are not silently ignored.
+It does not implement native GEMM-view/Packed-GEMM calls, explicit MLIR Vector
+lowering, loop interchange, multithreading, dynamic shapes, CUDA, GPU/NVVM,
+Tensor Cores, or mixed precision. LLVM may autovectorize profitable regular
+loops, but `threads` and schedule-controlled `vector_width` are rejected unless
+both are one; they are not silently ignored.
 
 The next useful milestones are stable Vector-to-LLVM lowering, loop
-interchange, a versioned native benchmark corpus with BLAS baselines, native
-GEMM plan lowering, and then GPU/NVVM code generation on NVIDIA hardware.
+interchange, BLAS baselines for the existing native corpus, native GEMM plan
+lowering, and then GPU/NVVM code generation on NVIDIA hardware.

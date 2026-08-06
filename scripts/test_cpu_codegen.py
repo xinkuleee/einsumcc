@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 import sys
 from typing import Tuple
 
@@ -97,6 +98,50 @@ def run_strided_case(compiler: NativeCpuCompiler) -> None:
     )
 
 
+def verify_backend_autovectorization(compiler: NativeCpuCompiler) -> None:
+    """Prove the shipped AOT backend can form real host SIMD instructions.
+
+    This deliberately tests LLVM's target-aware optimization of a sufficiently
+    regular generated loop nest. It is not schedule-controlled MLIR Vector
+    lowering, so ``DirectSchedule.vector_width`` remains unsupported.
+    """
+
+    problem = ContractionProblem.create("mk,kn->mn", (64, 64), (64, 64))
+    schedule = DirectSchedule(16, 16, 8, 1, 1)
+    source = compiler.lower(problem, "llvm-ir", schedule)
+    completed = subprocess.run(
+        (
+            str(compiler.toolchain.clang),
+            "-O2",
+            "-S",
+            "-emit-llvm",
+            "-x",
+            "ir",
+            "-",
+            "-o",
+            "-",
+        ),
+        input=source,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=compiler.timeout_seconds,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(
+            "clang failed while checking backend SIMD: {}".format(
+                completed.stderr.strip()
+            )
+        )
+    required_ir = ("vector.body", "fmul <4 x float>", "fadd <4 x float>")
+    if any(fragment not in completed.stdout for fragment in required_ir):
+        raise AssertionError(
+            "LLVM backend did not form a vector multiply-add loop for the "
+            "regular 64x64 contraction"
+        )
+    print("PASS LLVM backend autovectorization emitted <4 x float> SIMD")
+
+
 def main() -> int:
     if not OPT.is_file() or not TRANSLATE.is_file():
         raise SystemExit("build einsumcc-opt and bootstrap MLIR before CPU codegen tests")
@@ -106,6 +151,7 @@ def main() -> int:
     for index, case in enumerate(CASES):
         run_case(compiler, case, index)
     run_strided_case(compiler)
+    verify_backend_autovectorization(compiler)
     print("native CPU differential tests passed")
     return 0
 

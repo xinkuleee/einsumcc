@@ -125,6 +125,10 @@ loops use a fixed unit tile. The schedule pass tiles only the contraction root,
 not its zero fill. Raw and expanded schedules enter artifact identity and the
 manifest. `NativeDirectTuner` deduplicates equivalent projections, compiles each
 survivor, validates it against NumPy, and times a reusable bound dylib call.
+After translation, the pinned `clang -O2` stage may perform target-aware loop
+autovectorization. Mini v0.1 verifies vector multiply-add formation for one
+regular Apple arm64 workload, but this is not schedule-controlled MLIR Vector
+lowering: the native backend still rejects `vector_width != 1`.
 The native pipeline still implements Direct only.
 
 The intended A100 pipeline shares the frontend and verified dialect:
@@ -156,12 +160,13 @@ it with NumPy.
 | `cpu_backend.py` | independent plan semantics |
 | `native_backend.py` | native Direct lowering, AOT cache, and memref ABI |
 | `tuner.py`, `cache.py` | Python-plan and real-dylib native tuning plus persistent choices |
+| `benchmark.py`, `benchmarks/` | versioned semantic/native corpora and machine-readable reports |
 | `mlir_emitter.py` | portable semantic MLIR |
 | `tc_emitter.py` | frontend emission of verified `tc.contract` IR |
 | `include/`, `lib/` | `tc` dialect, verifier, lowering, and Direct tiling pass |
 | `tools/einsumcc-opt` | project optimizer and upstream pass driver |
 | `target.py` | transparent target models and hardware constraints |
-| `cli.py` | explain, verify, tune, tune-native, emit-mlir, and run-native workflows |
+| `cli.py` | explain, verify, tune, native benchmark, emit-mlir, and run-native workflows |
 
 ## Extension rules
 

@@ -1,4 +1,4 @@
-.PHONY: test test-mlir test-cpu-codegen build-mlir demo check benchmark
+.PHONY: test test-mlir test-cpu-codegen build-mlir demo check benchmark benchmark-native
 
 PYTHON ?= python3 -B
 export PYTHONPATH := src
@@ -23,3 +23,6 @@ check: test
 
 benchmark:
 	@$(PYTHON) -m einsumcc benchmark benchmarks/cpu-smoke.json --repeats 3
+
+benchmark-native:
+	@$(PYTHON) -m einsumcc benchmark-native benchmarks/native-mini-v0.1.json --repeats 5 --max-schedules 8

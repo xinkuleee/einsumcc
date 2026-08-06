@@ -10,7 +10,7 @@ from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
-from .benchmark import BenchmarkCorpus, CpuBenchmarkRunner
+from .benchmark import BenchmarkCorpus, CpuBenchmarkRunner, NativeBenchmarkRunner
 from .cache import TuningCache
 from .compiler import Compiler
 from .errors import EinsumCCError
@@ -250,6 +250,29 @@ def _command_benchmark(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _command_benchmark_native(arguments: argparse.Namespace) -> int:
+    corpus = BenchmarkCorpus.load(Path(arguments.corpus))
+    tuning_cache = TuningCache(Path(arguments.cache))
+    report = NativeBenchmarkRunner(
+        warmups=arguments.warmups,
+        repeats=arguments.repeats,
+        max_schedules=arguments.max_schedules,
+        seed=arguments.seed,
+        rtol=arguments.rtol,
+        atol=arguments.atol,
+        native_cache=arguments.native_cache,
+        tuning_cache=tuning_cache,
+    ).run(corpus)
+    rendered = json.dumps(
+        report, indent=2, sort_keys=True, allow_nan=False
+    ) + "\n"
+    if arguments.output:
+        Path(arguments.output).write_text(rendered, encoding="utf-8")
+    else:
+        print(rendered, end="")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="einsumcc", description="Compile and inspect binary tensor contractions"
@@ -338,6 +361,26 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--seed", type=int, default=0)
     benchmark.add_argument("-o", "--output")
     benchmark.set_defaults(handler=_command_benchmark)
+
+    native_benchmark = subparsers.add_parser(
+        "benchmark-native",
+        help="tune generated Direct dylibs for a versioned CPU corpus",
+    )
+    native_benchmark.add_argument("corpus")
+    native_benchmark.add_argument("--warmups", type=int, default=1)
+    native_benchmark.add_argument("--repeats", type=int, default=5)
+    native_benchmark.add_argument("--max-schedules", type=int, default=12)
+    native_benchmark.add_argument("--seed", type=int, default=0)
+    native_benchmark.add_argument("--rtol", type=float, default=1.0e-4)
+    native_benchmark.add_argument("--atol", type=float, default=1.0e-5)
+    native_benchmark.add_argument(
+        "--native-cache", type=Path, help="native artifact cache directory"
+    )
+    native_benchmark.add_argument(
+        "--cache", default=".einsumcc-cache/tuning-native-mini-v0.1.json"
+    )
+    native_benchmark.add_argument("-o", "--output")
+    native_benchmark.set_defaults(handler=_command_benchmark_native)
     return parser
 
 

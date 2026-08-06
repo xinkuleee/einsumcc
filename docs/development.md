@@ -88,8 +88,10 @@ not transferable to A100. Each cache entry contains the target name, and future
 device targets must use a distinct target identity.
 
 Use small inputs for Python Direct tests: that implementation is intentionally
-literal. Native Direct is compiled, but v0.1 has scalar single-threaded codegen
-and makes no claim that tiling must beat the baseline on every workload.
+literal. Native Direct is single-threaded and has no explicit MLIR Vector
+lowering in v0.1. The pinned LLVM backend may autovectorize profitable regular
+loops, and the end-to-end gate checks this separately from `vector_width`. The
+project makes no claim that tiling must beat the baseline on every workload.
 
 ## A100 continuation checklist
 

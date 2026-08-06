@@ -31,7 +31,8 @@ EinsumCC 是一个面向**二元静态 Tensor Contraction** 的小型领域编�
 | 原生 artifact cache | 已实现 | 内容寻址、校验和、并发安全 |
 | 原生 GEMM-view/Packed-GEMM | 未实现 | v0.1 只原生编译 Direct |
 | schedule 驱动原生 loop 变换 | 已实现 | 高秩 tile 投影 + 项目 MLIR tiling pass |
-| 原生 vectorization / 多线程 | 未实现 | `vector_width=1`、`threads=1` 被显式检查 |
+| LLVM 后端自动向量化 | 部分实现 | `clang -O2` 可对规整 loop 自动形成 SIMD，原生门禁检查 `<4 x float>` |
+| schedule 控制的 MLIR Vector / 多线程 | 未实现 | `vector_width=1`、`threads=1` 被显式检查 |
 | CUDA/GPU/NVVM backend | 未实现 | 需要在 NVIDIA 机器上继续 |
 
 因此，准确的项目描述是“实现了完整的小型 contraction compiler loop 和 Direct CPU native backend”，而不是“实现了高性能 Tensor Core 编译器”。
@@ -315,7 +316,7 @@ manifest 记录动态库 SHA-256。命中时同时验证 identity 和 binary che
 - tuning/cache：候选正确性、target 隔离、坏数据拒绝与持久化 round-trip；
 - dialect：FileCheck 正向、负向和 `tc -> linalg`；
 - native runtime：cache hit/corruption/concurrency、ABI 错误和 alias 检查；
-- end-to-end：matrix、batch、permuted layout、scalar output、multiple reductions、课程高秩 contraction 和 positive-stride input 全部走到 arm64 dylib，再与 NumPy 比较。
+- end-to-end：matrix、batch、permuted layout、scalar output、multiple reductions、课程高秩 contraction 和 positive-stride input 全部走到 arm64 dylib，再与 NumPy 比较；另用规整 64x64 contraction 验证 LLVM 后端确实形成 `<4 x float>` SIMD。
 
 推荐本地验收：
 
@@ -326,7 +327,9 @@ make test-cpu-codegen
 make check
 ```
 
-CPU benchmark 只用于 regression 和验证 benchmark plumbing；Python Direct latency 不能作为优化后 native CPU 性能，更不能作为 A100 性能证据。
+`benchmark` 的 Python CPU 数据只用于 regression 和验证 benchmark plumbing；
+`benchmark-native` 才测版本化 corpus 上的真实 dylib，但其 Mac CPU latency
+仍不能作为 A100 性能证据。
 
 ## 8. 最值得讲的设计取舍
 
@@ -354,7 +357,7 @@ Triton 提供通用 GPU kernel language、编程模型和优化 lowering；Einsu
 
 ### “你真正做了哪些编译优化？”
 
-v0.1 同时实现了两层：plan-level 上证明零拷贝 GEMM 是否合法，在 Direct、view 和 materialize-then-GEMM 之间选择；codegen-level 上把 Direct 的 B/M/N/K tile 投影到任意高秩 Einstein loop，并用 MLIR tiling 真实改变 SCF/LLVM 和 artifact，再由原生 tuner 实测选择。它没有宣称 vectorization、多线程、GPU 或 Tensor Core 优化。
+v0.1 同时实现了两层：plan-level 上证明零拷贝 GEMM 是否合法，在 Direct、view 和 materialize-then-GEMM 之间选择；codegen-level 上把 Direct 的 B/M/N/K tile 投影到任意高秩 Einstein loop，并用 MLIR tiling 真实改变 SCF/LLVM 和 artifact，再由原生 tuner 实测选择。规整 loop 还可能被最终 `clang -O2` 自动向量化，门禁能看到真实 `<4 x float>` IR；但这不等于 `vector_width` 驱动的 MLIR Vector lowering，后者与多线程、GPU、Tensor Core 一样没有宣称已实现。
 
 ### “为什么不能所有 contraction 都 reshape 成 GEMM？”
 
@@ -382,14 +385,14 @@ reshape 只有在物理 stride 允许连续 group collapse 时才是 view。任�
 
 > Built a CPU-first tensor-contraction compiler for explicit Einstein notation, including B/M/N/K analysis, layout-aware selection among Direct/zero-copy GEMM/packed GEMM plans, a verified MLIR dialect and lowering pipeline to native arm64 code, plus ranked-memref runtime and process-safe content-addressed caches.
 
-如果后续没有完成 GPU backend，不要写 CUDA/Tensor Core code generation；可以写“designed extension points for GPU/NVVM lowering”。可以写“implemented schedule-driven MLIR tiling”，但不能把它扩张成 vectorization 或 parallel codegen。
+如果后续没有完成 GPU backend，不要写 CUDA/Tensor Core code generation；可以写“designed extension points for GPU/NVVM lowering”。可以写“implemented schedule-driven MLIR tiling”以及“verified LLVM backend autovectorization on a regular workload”，但不能把它扩张成 schedule-controlled MLIR Vector 或 parallel codegen。
 
 ## 11. v0.1 之后的合理路线
 
 建议按“先让优化真实影响 machine code，再扩展 target”的顺序推进：
 
 1. 增加 loop interchange 与稳定的 Vector-to-LLVM 路径；
-2. 扩充 native CPU corpus，对比 scheduled Direct 和 BLAS；
+2. 在现有版本化 native CPU corpus 中加入 untiled/BLAS 外部基线；
 3. 实现 native GEMM-view call lowering，再实现 pack/unpack；
 4. 让三计划 selector 直接返回对应 native executable；
 5. 上 NVIDIA 环境实现 `gpu`/`nvvm` Direct baseline；

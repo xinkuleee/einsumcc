@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "name": "native-mini-v0.1",
+  "description": "Versioned schedule-driven native Direct CPU corpus; single-threaded with no explicit schedule-controlled MLIR Vector lowering in Mini v0.1.",
+  "cases": [
+    {
+      "name": "matmul-32",
+      "equation": "mk,kn->mn",
+      "lhs_shape": [32, 24],
+      "rhs_shape": [24, 32]
+    },
+    {
+      "name": "batched-matmul",
+      "equation": "bij,bjk->bik",
+      "lhs_shape": [2, 16, 12],
+      "rhs_shape": [2, 12, 20]
+    },
+    {
+      "name": "multiple-reductions",
+      "equation": "aij,jib->ab",
+      "lhs_shape": [6, 8, 10],
+      "rhs_shape": [10, 8, 7]
+    },
+    {
+      "name": "course-layout",
+      "equation": "aijd,bckd->abcijk",
+      "lhs_shape": [2, 3, 4, 8],
+      "rhs_shape": [2, 3, 5, 8]
+    },
+    {
+      "name": "strided-left",
+      "equation": "mk,kn->mn",
+      "lhs_shape": [12, 16],
+      "rhs_shape": [16, 20],
+      "lhs_strides": [32, 2]
+    }
+  ]
+}

@@ -32,7 +32,10 @@ plan interfaces are designed to feed an MLIR/CUDA backend on an A100 machine.
 The three plans are implemented by the Python CPU semantic backend. Native
 MLIR code generation in Mini v0.1 remains narrower: it lowers Direct only, but
 `block_m/n/k` now change the generated SCF loop nest and compiled artifact.
-Native GEMM-plan lowering, vectorization, and multithreading remain future work.
+Native GEMM-plan lowering, schedule-controlled MLIR Vector lowering, and
+multithreading remain future work. The pinned `clang -O2` backend can still
+autovectorize profitable regular loop nests; the native gate checks one such
+case without treating it as an implemented `vector_width` schedule knob.
 
 FP32 is the executable Nano v1 datatype. FP16/BF16, Tensor Cores, arbitrary
 GPU layouts, and fused epilogues are later milestones.
@@ -49,6 +52,8 @@ make test-cpu-codegen
 make demo
 make check
 make benchmark
+# Longer: compile and tune the versioned native Direct corpus.
+make benchmark-native
 ```
 
 Inspect the course contraction with small dimensions:
@@ -91,6 +96,14 @@ machine-readable report and reusable tuning record:
 PYTHONPATH=src python3 -m einsumcc tune-native \
   'mk,kn->mn' --lhs-shape 32,16 --rhs-shape 16,64 \
   --max-schedules 8 --repeats 20 -o native-tuning.json
+```
+
+Run the same workflow across the versioned native Mini v0.1 corpus:
+
+```bash
+PYTHONPATH=src python3 -m einsumcc benchmark-native \
+  benchmarks/native-mini-v0.1.json --max-schedules 8 --repeats 20 \
+  -o native-results.json
 ```
 
 `make test-cpu-codegen` performs the real compiler test: Python Einstein
