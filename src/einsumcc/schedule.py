@@ -41,6 +41,40 @@ class DirectSchedule:
     def as_dict(self) -> Mapping[str, int]:
         return asdict(self)
 
+    def expanded_tile_sizes(self, problem: ContractionProblem) -> Tuple[int, ...]:
+        """Project collapsed M/N/K tiles onto Einstein loop dimensions.
+
+        The returned tuple follows the lowering's canonical loop order,
+        ``equation.output + reduction_labels``. Batch loops receive a fixed
+        unit tile so they remain outside the configurable M/N/K tile loops;
+        there is deliberately no batch-tile tuning parameter in v0.1. Within
+        each M, N, or K group, the innermost dimensions are filled first while
+        the product of expanded tiles remains no larger than the collapsed
+        tile budget.
+
+        This is a deterministic schedule projection, not a claim that the
+        original dimensions have first been reassociated into one flat loop.
+        Keeping it here gives codegen, artifact identity, tuning, and
+        diagnostics one shared definition.
+        """
+
+        def expand(labels: Sequence[str], budget: int) -> Mapping[str, int]:
+            remaining = budget
+            projected = {}
+            for label in reversed(tuple(labels)):
+                tile = min(problem.extents[label], remaining)
+                projected[label] = tile
+                remaining = max(1, remaining // tile)
+            return projected
+
+        expanded = {}
+        expanded.update(expand(problem.groups.left_free, self.block_m))
+        expanded.update(expand(problem.groups.right_free, self.block_n))
+        expanded.update(expand(problem.groups.reduction, self.block_k))
+        loops = problem.equation.output + problem.groups.reduction
+        batch = set(problem.groups.batch)
+        return tuple(1 if label in batch else expanded[label] for label in loops)
+
     @classmethod
     def from_dict(cls, values: Mapping[str, int]) -> "DirectSchedule":
         return cls(
@@ -61,7 +95,7 @@ class ScheduleAssessment:
 
 
 class ScheduleSpace:
-    """Small, explicit search space suitable for Nano v1."""
+    """Small, explicit search space shared by semantic and native tuning."""
 
     def __init__(
         self,

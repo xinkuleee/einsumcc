@@ -28,6 +28,38 @@ class ScheduleAndCacheTest(unittest.TestCase):
         self.assertFalse(candidate.legal)
         self.assertTrue(any("vector width" in reason for reason in candidate.reasons))
 
+    def test_expands_matmul_tiles_in_lowering_loop_order(self):
+        problem = ContractionProblem.create("mk,kn->mn", (3, 7), (7, 5))
+        schedule = DirectSchedule(8, 16, 4, 1, 1)
+        self.assertEqual(schedule.expanded_tile_sizes(problem), (3, 5, 4))
+
+    def test_expands_high_rank_tiles_from_innermost_dimensions(self):
+        problem = ContractionProblem.create(
+            "aijd,bckd->abcijk", (2, 3, 4, 7), (2, 3, 5, 7)
+        )
+        schedule = DirectSchedule(8, 12, 4, 1, 1)
+        # M=(a,i,j) -> (1,2,4), N=(b,c,k) -> (1,2,5). The
+        # result is then placed in output order a,b,c,i,j,k followed by d.
+        self.assertEqual(
+            schedule.expanded_tile_sizes(problem), (1, 1, 2, 2, 4, 5, 4)
+        )
+
+    def test_expansion_keeps_batch_outer_and_handles_empty_free_groups(self):
+        batched = ContractionProblem.create(
+            "bmk,bkn->bmn", (2, 3, 7), (2, 7, 5)
+        )
+        schedule = DirectSchedule(2, 4, 6, 1, 1)
+        self.assertEqual(schedule.expanded_tile_sizes(batched), (1, 2, 4, 6))
+
+        no_m = ContractionProblem.create("k,kn->n", (7,), (7, 5))
+        self.assertEqual(schedule.expanded_tile_sizes(no_m), (4, 6))
+
+        scalar = ContractionProblem.create("ij,ij->", (3, 4), (3, 4))
+        self.assertEqual(
+            DirectSchedule(2, 2, 8, 1, 1).expanded_tile_sizes(scalar),
+            (2, 4),
+        )
+
     def test_cache_round_trip_and_compiler_override(self):
         problem = ContractionProblem.create("mk,kn->mn", (3, 4), (4, 5))
         schedule = DirectSchedule(8, 8, 4, 1, 1)

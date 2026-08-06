@@ -1,6 +1,6 @@
 # EinsumCC v0.1 技术设计与面试复习
 
-本文记录 v0.1（Nano v1）实际完成的能力、关键算法、工程取舍和可继续扩展的边界。它既是实现说明，也是后续准备编译器、Kernel 和 AI Compiler 岗位面试时的复习提纲。
+本文记录 v0.1（Nano v1 基线 + Mini v0.1）实际完成的能力、关键算法、工程取舍和可继续扩展的边界。它既是实现说明，也是后续准备编译器、Kernel 和 AI Compiler 岗位面试时的复习提纲。
 
 ## 一句话定位
 
@@ -23,14 +23,15 @@ EinsumCC 是一个面向**二元静态 Tensor Contraction** 的小型领域编�
 | B/M/N/K 分类 | 已实现 | 支持 batch、自由轴和多个 reduction 轴 |
 | 三种执行计划及代价模型 | 已实现 | Direct、GEMM-view、Packed-GEMM |
 | 三种计划的可执行语义 | 已实现 | Python/NumPy CPU backend |
-| schedule space 与经验调优 | 已实现 | 当前测量 Python CPU backend |
+| schedule space 与经验调优 | 已实现 | Python 三计划 tuner + 原生 Direct dylib tuner |
 | 持久化 tuning cache | 已实现 | target-aware、文件锁、原子替换 |
 | 自定义 `tc.contract` dialect | 已实现 | TableGen op、独立 C++ verifier |
 | `tc.contract -> linalg.generic` | 已实现 | 项目自己的 conversion pass |
 | Direct 原生 CPU 编译执行 | 已实现 | MLIR 到 LLVM IR、dylib、`ctypes` ABI |
 | 原生 artifact cache | 已实现 | 内容寻址、校验和、并发安全 |
 | 原生 GEMM-view/Packed-GEMM | 未实现 | v0.1 只原生编译 Direct |
-| schedule 驱动原生 loop 变换 | 未实现 | 当前 native lowering 使用通用 loops |
+| schedule 驱动原生 loop 变换 | 已实现 | 高秩 tile 投影 + 项目 MLIR tiling pass |
+| 原生 vectorization / 多线程 | 未实现 | `vector_width=1`、`threads=1` 被显式检查 |
 | CUDA/GPU/NVVM backend | 未实现 | 需要在 NVIDIA 机器上继续 |
 
 因此，准确的项目描述是“实现了完整的小型 contraction compiler loop 和 Direct CPU native backend”，而不是“实现了高性能 Tensor Core 编译器”。
@@ -183,7 +184,7 @@ CPU/A100 target model 只是透明的启发式参数。没有真实 A100 测量�
 
 剩余候选按 tile utilization、数据复用和 vector width 的启发式分数排序。CPU target 固定为单线程、标量 vector width；这些字段主要是为后续 GPU backend 保留稳定接口。
 
-需要明确：v0.1 的 Python Direct backend 会消费 B/M/N/K tile；当前 native MLIR loop lowering还没有消费 planner 选出的 schedule。
+Mini v0.1 会把折叠的 M/N/K tile 确定性投影到原始 Einstein loops：每组从最内层维度开始分配预算，Batch 使用固定 unit tile。例如 M 轴 extent 为 $(2,3,4)$ 且 `block_m=8` 时投影为 $(1,2,4)$。这不是“先真实 collapse 再 tile”，而是一条可解释、可缓存的结构化 loop 投影。`threads` 与 `vector_width` 只有值为 1 才被原生 CPU backend 接受；没有把未实现的并行或向量化伪装成已消费参数。
 
 ### 3.3 经验调优
 
@@ -197,6 +198,8 @@ CPU/A100 target model 只是透明的启发式参数。没有真实 A100 测量�
 6. 把 plan、schedule、samples 和 median 写入 target-specific cache。
 
 缓存键是 `(target_name, workload_key)`。workload key 覆盖 equation、shape、stride、dtype 和输出 metadata，因此不同 layout 不会错误复用记录；target 单独参与键，CPU 测量也不会覆盖 A100 选择。
+
+原生 Direct tuner 是另一条真实 codegen 闭环：按 expanded tile 去重，逐个编译 dylib，先和 NumPy 校验一次，再用 `NativeInvocation` 绑定一次 descriptor，并重复计时生成函数调用。计时仍包含 `ctypes` host-call 开销；baseline 是静态排序第一的不同 schedule，并非 untiled kernel。报告保留全部 samples、median、误差、artifact key、CPU/toolchain 环境、容差、时间戳、baseline 与 selector 结果；不会断言 tiling 必然快过外部或 untiled baseline。原生 tuning target 还包含 host/toolchain 指纹，避免跨机器误复用。
 
 ## 4. 自定义 MLIR dialect 与 lowering
 
@@ -248,6 +251,8 @@ Einstein frontend
   -> linalg.generic
   -> one-shot bufferization
   -> result-to-out-parameter conversion
+  -> einsumcc Direct tiling pass
+  -> affine/subview lowering
   -> linalg/scf/cf loops
   -> LLVM dialect
   -> LLVM IR
@@ -349,7 +354,7 @@ Triton 提供通用 GPU kernel language、编程模型和优化 lowering；Einsu
 
 ### “你真正做了哪些编译优化？”
 
-v0.1 已实现的是 plan-level optimization：证明零拷贝 GEMM 是否合法，在 Direct、view 和 materialize-then-GEMM 之间按 compute、traffic、launch、workspace 选择，并提供 empirical override。它还没有宣称 native tiling/vectorization 或 GPU Tensor Core 优化；当前 native Direct 是正确性完整、性能优化仍可继续的 baseline。
+v0.1 同时实现了两层：plan-level 上证明零拷贝 GEMM 是否合法，在 Direct、view 和 materialize-then-GEMM 之间选择；codegen-level 上把 Direct 的 B/M/N/K tile 投影到任意高秩 Einstein loop，并用 MLIR tiling 真实改变 SCF/LLVM 和 artifact，再由原生 tuner 实测选择。它没有宣称 vectorization、多线程、GPU 或 Tensor Core 优化。
 
 ### “为什么不能所有 contraction 都 reshape 成 GEMM？”
 
@@ -377,16 +382,16 @@ reshape 只有在物理 stride 允许连续 group collapse 时才是 view。任�
 
 > Built a CPU-first tensor-contraction compiler for explicit Einstein notation, including B/M/N/K analysis, layout-aware selection among Direct/zero-copy GEMM/packed GEMM plans, a verified MLIR dialect and lowering pipeline to native arm64 code, plus ranked-memref runtime and process-safe content-addressed caches.
 
-如果后续没有完成 GPU backend，不要写 CUDA/Tensor Core code generation；可以写“designed extension points for GPU/NVVM lowering”。如果 native schedule 尚未接入，也不要写“implemented MLIR tiling/vectorization”。
+如果后续没有完成 GPU backend，不要写 CUDA/Tensor Core code generation；可以写“designed extension points for GPU/NVVM lowering”。可以写“implemented schedule-driven MLIR tiling”，但不能把它扩张成 vectorization 或 parallel codegen。
 
 ## 11. v0.1 之后的合理路线
 
 建议按“先让优化真实影响 machine code，再扩展 target”的顺序推进：
 
-1. 让 `DirectSchedule` 驱动 native loop tiling/interchange，并检查生成 IR；
-2. 增加 native CPU benchmark，对比 generic Direct、scheduled Direct 和 BLAS；
+1. 增加 loop interchange 与稳定的 Vector-to-LLVM 路径；
+2. 扩充 native CPU corpus，对比 scheduled Direct 和 BLAS；
 3. 实现 native GEMM-view call lowering，再实现 pack/unpack；
-4. 将计划选择和 native executable 真正连接起来；
+4. 让三计划 selector 直接返回对应 native executable；
 5. 上 NVIDIA 环境实现 `gpu`/`nvvm` Direct baseline；
 6. 加入 shared-memory tiling、coalescing、vectorization，再在 A100 上 autotune；
 7. 最后扩展 FP16/BF16、mixed accumulation、Tensor Core 和 epilogue fusion。
@@ -415,6 +420,7 @@ selected plan + selected schedule
 | `tc.contract` frontend emission | `src/einsumcc/tc_emitter.py` |
 | Dialect verifier | `lib/Dialect/TC/IR/TCOps.cpp` |
 | `tc -> linalg` pass | `lib/Conversion/TCToLinalg/TCToLinalg.cpp` |
+| Direct tiling pass | `lib/Conversion/TCToLinalg/ScheduleDirect.cpp` |
 | Native pipeline/ABI/artifact cache | `src/einsumcc/native_backend.py` |
 | 公开 façade | `src/einsumcc/compiler.py` |
 | CLI | `src/einsumcc/cli.py` |

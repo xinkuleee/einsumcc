@@ -48,9 +48,9 @@ input contractions against NumPy. Input descriptors carry runtime strides; the
 Nano output ABI remains C-contiguous. This harness is an end-to-end compiler
 test. `NativeCpuCompiler` also exposes this narrow static AOT path through the
 Python API and `run-native`; dynamic shapes, arbitrary device buffers, and a
-long-lived JIT execution engine remain deferred to Mini.
+long-lived JIT execution engine remain deferred.
 
-Native artifacts default to `.einsumcc-cache/native-v1`. The `run-native` CLI
+Native artifacts default to `.einsumcc-cache/native-mini-v0.1`. The `run-native` CLI
 accepts `--native-cache`, and embedding callers can pass `cache_dir` to
 `NativeCpuCompiler`.
 Tool discovery can be overridden with `EINSUMCC_ROOT`, `EINSUMCC_OPT`,
@@ -82,13 +82,14 @@ legality and explanation text.
 
 ## CPU benchmark discipline
 
-The `tune` command is useful for testing the tuner and cache. Laptop results are
+The `tune` command measures the Python semantic backend; `tune-native` compiles
+and measures real schedule-specific dylibs. Laptop results are
 not transferable to A100. Each cache entry contains the target name, and future
 device targets must use a distinct target identity.
 
-Use small inputs for Direct CPU tests: the implementation is intentionally
-literal rather than a high-performance CPU kernel. Its purpose is transparent
-semantics and differential correctness.
+Use small inputs for Python Direct tests: that implementation is intentionally
+literal. Native Direct is compiled, but v0.1 has scalar single-threaded codegen
+and makes no claim that tiling must beat the baseline on every workload.
 
 ## A100 continuation checklist
 

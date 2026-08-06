@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from einsumcc.native_backend import NativeCpuCompiler, NativeToolchain  # noqa: E402
 from einsumcc.problem import ContractionProblem  # noqa: E402
+from einsumcc.schedule import DirectSchedule  # noqa: E402
 
 
 Case = Tuple[str, Tuple[int, ...], Tuple[int, ...]]
@@ -55,10 +56,16 @@ def run_case(compiler: NativeCpuCompiler, case: Case, index: int) -> None:
     lhs = rng.standard_normal(lhs_shape).astype(np.float32)
     rhs = rng.standard_normal(rhs_shape).astype(np.float32)
     reference = np.einsum(equation, lhs, rhs, dtype=np.float32)
-    output = compiler.compile(problem).run(lhs, rhs)
+    schedule = DirectSchedule(3, 4, 4, 1, 1)
+    kernel = compiler.compile(problem, schedule)
+    output = kernel.run(lhs, rhs)
 
     np.testing.assert_allclose(output, reference, rtol=1.0e-4, atol=1.0e-5)
-    print("PASS {}".format(equation))
+    print(
+        "PASS {} schedule={} expanded={}".format(
+            equation, dict(schedule.as_dict()), kernel.expanded_tile_sizes
+        )
+    )
 
 
 def run_strided_case(compiler: NativeCpuCompiler) -> None:
@@ -78,10 +85,16 @@ def run_strided_case(compiler: NativeCpuCompiler) -> None:
     lhs = _strided_random(lhs_shape, lhs_strides, rng)
     rhs = _strided_random(rhs_shape, rhs_strides, rng)
     reference = np.einsum(equation, lhs, rhs, dtype=np.float32)
-    output = compiler.compile(problem).run(lhs, rhs)
+    schedule = DirectSchedule(2, 3, 3, 1, 1)
+    kernel = compiler.compile(problem, schedule)
+    output = kernel.run(lhs, rhs)
 
     np.testing.assert_allclose(output, reference, rtol=1.0e-4, atol=1.0e-5)
-    print("PASS {} (positive-stride inputs)".format(equation))
+    print(
+        "PASS {} (positive-stride inputs) expanded={}".format(
+            equation, kernel.expanded_tile_sizes
+        )
+    )
 
 
 def main() -> int:

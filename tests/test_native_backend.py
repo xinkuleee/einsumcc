@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,8 @@ from einsumcc.errors import BackendError
 from einsumcc.compiler import Compiler
 from einsumcc.native_backend import NativeCpuCompiler, NativeToolchain
 from einsumcc.problem import ContractionProblem
+from einsumcc.schedule import DirectSchedule, ScheduleSpace
+from einsumcc.tuner import NATIVE_CPU_TUNING_TARGET, NativeDirectTuner
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +61,68 @@ class NativeBackendTest(unittest.TestCase):
         )
         self.assertEqual(manifest["key"], second.cache_key)
         self.assertEqual(manifest["problem"]["equation"], "mk,kn->mn")
+        self.assertEqual(manifest["schedule"], dict(second.schedule.as_dict()))
+        self.assertEqual(
+            manifest["expanded_tile_sizes"], list(second.expanded_tile_sizes)
+        )
+
+    def test_schedule_changes_ir_artifact_identity_and_manifest(self):
+        problem = ContractionProblem.create("mk,kn->mn", (7, 9), (9, 5))
+        first_schedule = DirectSchedule(2, 3, 4, 1, 1)
+        second_schedule = DirectSchedule(4, 5, 8, 1, 1)
+        first = self.compiler.compile(problem, first_schedule)
+        second = self.compiler.compile(problem, second_schedule)
+        self.assertNotEqual(first.cache_key, second.cache_key)
+        self.assertEqual(first.expanded_tile_sizes, (2, 3, 4))
+        self.assertEqual(second.expanded_tile_sizes, (4, 5, 8))
+
+        scheduled = self.compiler.lower(problem, "scheduled", first_schedule)
+        self.assertIn("scf.for", scheduled)
+        self.assertIn("step %c2", scheduled)
+        self.assertIn("step %c3", scheduled)
+        self.assertIn("step %c4", scheduled)
+
+    def test_native_backend_rejects_unimplemented_schedule_fields(self):
+        problem = ContractionProblem.create("mk,kn->mn", (3, 4), (4, 5))
+        with self.assertRaisesRegex(BackendError, "threads=1"):
+            self.compiler.compile(problem, DirectSchedule(2, 2, 2, 2, 1))
+        with self.assertRaisesRegex(BackendError, "vector_width=1"):
+            self.compiler.compile(problem, DirectSchedule(2, 2, 2, 1, 2))
+
+    def test_bound_invocation_is_reusable(self):
+        problem = ContractionProblem.create("mk,kn->mn", (3, 4), (4, 5))
+        lhs = np.arange(12, dtype=np.float32).reshape(3, 4)
+        rhs = np.arange(20, dtype=np.float32).reshape(4, 5)
+        output = np.empty((3, 5), dtype=np.float32)
+        invocation = self.compiler.compile(problem).bind(lhs, rhs, output)
+        self.assertIs(invocation.run(), output)
+        output.fill(np.nan)
+        self.assertIs(invocation.run(), output)
+        np.testing.assert_allclose(output, np.einsum("mk,kn->mn", lhs, rhs))
+
+    def test_native_tuner_compiles_deduplicates_and_measures_dylibs(self):
+        problem = ContractionProblem.create("mk,kn->mn", (3, 4), (4, 3))
+        lhs = np.arange(12, dtype=np.float32).reshape(3, 4)
+        rhs = np.arange(12, dtype=np.float32).reshape(4, 3)
+        # Several raw choices saturate to the same loop tiles on this small
+        # problem; only distinct generated loop structures are measured.
+        space = ScheduleSpace(
+            block_m=(2, 4, 8), block_n=(2, 4), block_k=(2, 4, 8)
+        )
+        result = NativeDirectTuner(
+            self.compiler, space, warmups=0, repeats=2, max_schedules=8
+        ).tune(problem, lhs, rhs)
+        expanded = [item.expanded_tile_sizes for item in result.measurements]
+        self.assertEqual(len(expanded), len(set(expanded)))
+        self.assertGreater(len(expanded), 1)
+        self.assertIn(result.best, result.measurements)
+        self.assertEqual(len(result.best.samples_us), 2)
+        self.assertLessEqual(result.best.max_abs_error, 1.0e-4)
+        self.assertIsNotNone(result.speedup_vs_baseline)
+        self.assertGreater(result.speedup_vs_baseline or 0.0, 0.0)
+        record = result.to_record(problem)
+        self.assertTrue(record.target.startswith(NATIVE_CPU_TUNING_TARGET))
+        self.assertEqual(record.schedule, result.best.schedule)
 
     def test_invalid_cache_entry_is_rebuilt(self):
         problem = ContractionProblem.create("mk,kn->mn", (2, 3), (3, 2))
@@ -71,6 +136,17 @@ class NativeBackendTest(unittest.TestCase):
         np.testing.assert_allclose(
             rebuilt.run(lhs, rhs), np.einsum("mk,kn->mn", lhs, rhs)
         )
+
+    def test_dangling_symlink_cache_entry_is_rebuilt(self):
+        problem = ContractionProblem.create("mk,kn->mn", (2, 3), (3, 2))
+        first = self.compiler.compile(problem)
+        entry = first.library_path.parent
+        shutil.rmtree(entry)
+        entry.symlink_to(entry.with_name("missing-entry"), target_is_directory=True)
+
+        rebuilt = self.compiler.compile(problem)
+        self.assertFalse(rebuilt.cache_hit)
+        self.assertTrue(rebuilt.library_path.is_file())
 
     def test_layout_is_part_of_native_artifact_identity(self):
         contiguous = ContractionProblem.create("mk,kn->mn", (3, 4), (4, 5))

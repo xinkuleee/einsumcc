@@ -107,20 +107,25 @@ The tested macOS Direct path is:
 
 ```text
 Einstein frontend -> tc.contract -> linalg.generic -> bufferization
-  -> scf/cf loops -> LLVM dialect -> LLVM IR -> native arm64
+  -> schedule-driven linalg tiling -> scf/cf loops
+  -> LLVM dialect -> LLVM IR -> native arm64
 ```
 
 `NativeCpuCompiler` drives that path and stores content-addressed AOT artifacts
-under `.einsumcc-cache/native-v1`. The cache identity covers the workload
+under `.einsumcc-cache/native-mini-v0.1`. The cache identity covers the workload
 (including layout), semantic IR, pipeline revision, executable metadata, and
 host identity; the manifest also checksums the shared library. A sidecar file
 lock serializes concurrent population. `NativeKernel` calls the generated C
 wrapper with validated ranked-memref descriptors. Python owns the input and
 output arrays, so generated code never transfers heap ownership across the ABI;
 output/input overlap is rejected because the kernel zero-initializes output.
-This native pipeline implements Direct only. The three-plan selector and
-`DirectSchedule` are fully exercised by the Python semantic backend, but the
-selected schedule does not yet rewrite the native `linalg`/loop pipeline.
+`DirectSchedule.expanded_tile_sizes()` projects collapsed M/N/K budgets onto
+`output + reduction` loop order, filling inner group dimensions first; batch
+loops use a fixed unit tile. The schedule pass tiles only the contraction root,
+not its zero fill. Raw and expanded schedules enter artifact identity and the
+manifest. `NativeDirectTuner` deduplicates equivalent projections, compiles each
+survivor, validates it against NumPy, and times a reusable bound dylib call.
+The native pipeline still implements Direct only.
 
 The intended A100 pipeline shares the frontend and verified dialect:
 
@@ -150,13 +155,13 @@ it with NumPy.
 | `compiler.py` | public compile/explain/execute façade |
 | `cpu_backend.py` | independent plan semantics |
 | `native_backend.py` | native Direct lowering, AOT cache, and memref ABI |
-| `tuner.py`, `cache.py` | measurement and persistent target-specific choices |
+| `tuner.py`, `cache.py` | Python-plan and real-dylib native tuning plus persistent choices |
 | `mlir_emitter.py` | portable semantic MLIR |
 | `tc_emitter.py` | frontend emission of verified `tc.contract` IR |
-| `include/`, `lib/` | `tc` dialect, verifier, and lowering pass |
+| `include/`, `lib/` | `tc` dialect, verifier, lowering, and Direct tiling pass |
 | `tools/einsumcc-opt` | project optimizer and upstream pass driver |
 | `target.py` | transparent target models and hardware constraints |
-| `cli.py` | explain, verify, tune, emit-mlir, and run-native workflows |
+| `cli.py` | explain, verify, tune, tune-native, emit-mlir, and run-native workflows |
 
 ## Extension rules
 

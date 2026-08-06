@@ -53,6 +53,7 @@ public:
               nestedLocation, arguments[2], product);
           builder.create<linalg::YieldOp>(nestedLocation, sum);
         });
+    generic->setAttr("einsumcc.schedule_root", rewriter.getUnitAttr());
 
     rewriter.replaceOp(op, generic.getResults());
     return success();

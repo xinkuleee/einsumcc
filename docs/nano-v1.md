@@ -1,6 +1,7 @@
 # Nano v1 scope
 
-Nano v1 is the implementation milestone published as package version `0.1.0`.
+Nano v1 is the foundation included in package version `0.1.0`; Mini v0.1 adds
+schedule-driven native Direct codegen and native autotuning on top.
 
 Nano v1 is a complete but deliberately narrow compiler loop. It is not a
 production replacement for cuTENSOR.
@@ -38,9 +39,9 @@ the verifier rather than silently miscompiled.
    then lower static CPU cases (including positive-stride inputs) through the
    native Direct path.
 
-The Python semantic backend executes Direct, GEMM-view, and Packed-GEMM. The
-Nano v1 MLIR backend implements Direct only; its current generic loop lowering
-does not consume the planner's `DirectSchedule`.
+The Python semantic backend executes Direct, GEMM-view, and Packed-GEMM. Mini
+v0.1's MLIR backend implements Direct only and consumes `block_m/n/k` through
+a deterministic high-rank tile projection and MLIR tiling pass.
 
 ## Completion gates
 
@@ -61,6 +62,7 @@ does not consume the planner's `DirectSchedule`.
   device-buffer ownership (Nano has a small static AOT/memref runtime);
 - FP16/BF16 and mixed-precision accumulation;
 - Tensor Core-specific Direct lowering;
-- native GEMM-view/Packed-GEMM lowering and schedule-driven native loops;
+- native GEMM-view/Packed-GEMM lowering;
+- native vectorization, loop interchange, and multithreading;
 - contraction/epilogue fusion;
 - learned cost models and multi-input contraction-order search.

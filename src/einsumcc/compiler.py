@@ -18,6 +18,7 @@ from .tuner import EmpiricalTuner, TuningResult
 
 if TYPE_CHECKING:
     from .native_backend import NativeKernel, NativeToolchain
+    from .tuner import NativeTuningResult
 
 
 @dataclass(frozen=True)
@@ -149,17 +150,18 @@ class Compiler:
         self,
         problem: ContractionProblem,
         *,
+        schedule: Optional[DirectSchedule] = None,
         cache_dir: Optional[Path] = None,
         toolchain: Optional["NativeToolchain"] = None,
         timeout_seconds: int = 180,
     ) -> "NativeKernel":
         """AOT-compile the MLIR Direct path for the host CPU.
 
-        This entry point is deliberately named ``native_direct``: Nano v1's
-        Python semantic backend executes all three planned strategies, while
-        native MLIR code generation currently implements Direct only. The
-        Direct schedule selected by :meth:`compile` is not yet consumed by
-        this lowering.
+        This entry point is deliberately named ``native_direct``: the Python
+        semantic backend executes all three planned strategies, while
+        native MLIR code generation currently implements Direct only. In Mini
+        v0.1 the selected schedule is projected onto the original Einstein
+        loops and consumed by the MLIR tiling pass.
         """
 
         if self.target.name != CPU_MODEL.name:
@@ -170,11 +172,72 @@ class Compiler:
             )
         from .native_backend import NativeCpuCompiler
 
-        return NativeCpuCompiler(
+        native = NativeCpuCompiler(
             toolchain=toolchain,
             cache_dir=cache_dir,
             timeout_seconds=timeout_seconds,
-        ).compile(problem)
+        )
+        selected = schedule
+        if selected is None and self.cache is not None:
+            record = self.cache.lookup(problem.workload_key, native.tuning_target)
+            if (
+                record is not None
+                and record.plan_kind == PlanKind.DIRECT
+                and record.schedule is not None
+                and record.schedule.threads == 1
+                and record.schedule.vector_width == 1
+                and self.schedule_space.assess(
+                    problem, CPU_MODEL, record.schedule
+                ).legal
+            ):
+                selected = record.schedule
+        if selected is None:
+            selected = self.schedule_space.default(problem, CPU_MODEL)
+        return native.compile(problem, selected)
+
+    def tune_native_direct(
+        self,
+        problem: ContractionProblem,
+        lhs: np.ndarray,
+        rhs: np.ndarray,
+        *,
+        cache_dir: Optional[Path] = None,
+        toolchain: Optional["NativeToolchain"] = None,
+        timeout_seconds: int = 180,
+        warmups: int = 1,
+        repeats: int = 5,
+        max_schedules: int = 12,
+        rtol: float = 1.0e-4,
+        atol: float = 1.0e-5,
+    ) -> "NativeTuningResult":
+        """Compile and empirically select among real native dylibs."""
+
+        if self.target.name != CPU_MODEL.name:
+            raise ValueError(
+                "native Direct tuning requires target '{}', got '{}'".format(
+                    CPU_MODEL.name, self.target.name
+                )
+            )
+        from .native_backend import NativeCpuCompiler
+        from .tuner import NativeDirectTuner
+
+        native = NativeCpuCompiler(
+            toolchain=toolchain,
+            cache_dir=cache_dir,
+            timeout_seconds=timeout_seconds,
+        )
+        result = NativeDirectTuner(
+            native,
+            self.schedule_space,
+            warmups=warmups,
+            repeats=repeats,
+            max_schedules=max_schedules,
+            rtol=rtol,
+            atol=atol,
+        ).tune(problem, lhs, rhs)
+        if self.cache is not None:
+            self.cache.store(result.to_record(problem))
+        return result
 
     def tune_cpu(
         self,

@@ -8,7 +8,7 @@ The project is intentionally CPU-first: parsing, legality, planning, tuning,
 and numerical semantics are testable on a development laptop. The same IR and
 plan interfaces are designed to feed an MLIR/CUDA backend on an A100 machine.
 
-## Current milestone: Nano v1 CPU compiler
+## Current milestone: Mini v0.1 CPU compiler
 
 - explicit `einsum` syntax such as `bij,bjk->bik`;
 - binary contractions with batch, free, and multiple reduction indices;
@@ -24,12 +24,15 @@ plan interfaces are designed to feed an MLIR/CUDA backend on an A100 machine.
   native arm64 dynamic library;
 - a small native Direct runtime with ranked-memref validation, content-addressed
   artifacts, and process-safe cache population.
+- deterministic projection of collapsed B/M/N/K tiles to arbitrary-rank
+  Einstein loops and a project-owned MLIR tiling pass;
+- real-dylib native schedule autotuning with correctness checks, reusable ABI
+  bindings, hardware/toolchain-scoped records, and JSON reports.
 
 The three plans are implemented by the Python CPU semantic backend. Native
-MLIR code generation in Nano v1 is intentionally narrower: it lowers Direct
-only, and the generated loop nest does not yet consume the schedule selected
-by the planner. GEMM-plan lowering and schedule-driven code generation belong
-to Mini.
+MLIR code generation in Mini v0.1 remains narrower: it lowers Direct only, but
+`block_m/n/k` now change the generated SCF loop nest and compiled artifact.
+Native GEMM-plan lowering, vectorization, and multithreading remain future work.
 
 FP32 is the executable Nano v1 datatype. FP16/BF16, Tensor Cores, arbitrary
 GPU layouts, and fused epilogues are later milestones.
@@ -64,7 +67,7 @@ PYTHONPATH=src python3 -m einsumcc verify \
   'bij,bjk->bik' --lhs-shape 2,3,4 --rhs-shape 2,4,5
 ```
 
-Emit the semantic `tc.contract` module. `--stage linalg`, `llvm`, and `llvm-ir`
+Emit the semantic `tc.contract` module. `--stage linalg`, `scheduled`, `llvm`, and `llvm-ir`
 show successive outputs from the real project-owned native lowering pipeline:
 
 ```bash
@@ -77,7 +80,17 @@ on the host CPU:
 
 ```bash
 PYTHONPATH=src python3 -m einsumcc run-native \
-  'mk,kn->mn' --lhs-shape 32,16 --rhs-shape 16,64
+  'mk,kn->mn' --lhs-shape 32,16 --rhs-shape 16,64 \
+  --block-m 8 --block-n 16 --block-k 4
+```
+
+Compile and measure distinct generated loop schedules, then save both the
+machine-readable report and reusable tuning record:
+
+```bash
+PYTHONPATH=src python3 -m einsumcc tune-native \
+  'mk,kn->mn' --lhs-shape 32,16 --rhs-shape 16,64 \
+  --max-schedules 8 --repeats 20 -o native-tuning.json
 ```
 
 `make test-cpu-codegen` performs the real compiler test: Python Einstein
@@ -91,6 +104,8 @@ contractions against NumPy, including positive-stride inputs.
   component boundaries.
 - [Nano v1 scope](docs/nano-v1.md) records supported semantics and completion
   gates.
+- [Mini v0.1 milestone](docs/mini-v0.1.md) specifies schedule projection,
+  native tiling/autotuning, validation, and the exact remaining boundary.
 - [CPU-first decision](docs/adr/0001-cpu-first.md) explains why CPU execution
   is a semantic backend rather than throwaway scaffolding.
 - [Planning decision](docs/adr/0002-plan-model.md) explains the three execution

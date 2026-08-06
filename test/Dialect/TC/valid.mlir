@@ -1,5 +1,6 @@
 // RUN: einsumcc-opt %s | FileCheck %s --check-prefix=ROUNDTRIP
 // RUN: einsumcc-opt %s --tc-contract-to-linalg | FileCheck %s --check-prefix=LOWER
+// RUN: einsumcc-opt %s --tc-contract-to-linalg --one-shot-bufferize=bufferize-function-boundaries --buffer-results-to-out-params='hoist-static-allocs modify-public-functions' '--einsumcc-schedule-direct=tile-sizes=2,3,4' | FileCheck %s --check-prefix=SCHEDULE
 
 module {
   func.func @matmul(%lhs: tensor<3x4xf32>, %rhs: tensor<4x5xf32>)
@@ -24,3 +25,12 @@ module {
 // LOWER: linalg.generic
 // LOWER: arith.mulf
 // LOWER: arith.addf
+// SCHEDULE-NOT: einsumcc.schedule_root
+// SCHEDULE: linalg.fill
+// SCHEDULE-NOT: scf.for
+// SCHEDULE: scf.for
+// SCHEDULE: scf.for
+// SCHEDULE: scf.for
+// SCHEDULE-NOT: scf.for
+// SCHEDULE: linalg.generic
+// SCHEDULE-NOT: scf.for

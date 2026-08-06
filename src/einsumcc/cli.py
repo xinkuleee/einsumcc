@@ -1,8 +1,9 @@
-"""Command-line interface for inspecting and testing the Nano v1 pipeline."""
+"""Command-line interface for the Nano semantics and Mini v0.1 pipeline."""
 
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
@@ -15,6 +16,7 @@ from .compiler import Compiler
 from .errors import EinsumCCError
 from .native_backend import NativeCpuCompiler
 from .problem import ContractionProblem
+from .schedule import DirectSchedule
 from .target import CPU_MODEL, TARGETS, get_target
 from .tc_emitter import TcEmitter
 
@@ -62,6 +64,23 @@ def _arrays(problem: ContractionProblem, seed: int) -> Tuple[np.ndarray, np.ndar
         _random_array(problem.lhs.shape, problem.lhs.strides, rng),
         _random_array(problem.rhs.shape, problem.rhs.strides, rng),
     )
+
+
+def _add_schedule_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--block-m", type=int)
+    parser.add_argument("--block-n", type=int)
+    parser.add_argument("--block-k", type=int)
+
+
+def _schedule(arguments: argparse.Namespace) -> Optional[DirectSchedule]:
+    values = (arguments.block_m, arguments.block_n, arguments.block_k)
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise ValueError(
+            "--block-m, --block-n, and --block-k must be supplied together"
+        )
+    return DirectSchedule(*values, 1, 1)
 
 
 def _command_explain(arguments: argparse.Namespace) -> int:
@@ -122,14 +141,23 @@ def _command_tune(arguments: argparse.Namespace) -> int:
 
 def _command_emit_mlir(arguments: argparse.Namespace) -> int:
     problem = _problem(arguments)
+    schedule = _schedule(arguments)
     if arguments.stage == "tc":
+        if schedule is not None:
+            raise ValueError(
+                "schedule options require --stage scheduled, llvm, or llvm-ir"
+            )
         rendered = TcEmitter().emit(problem, arguments.function).text
     else:
         if arguments.function != "contract":
             raise ValueError(
                 "native lowering currently exports the fixed function name 'contract'"
             )
-        rendered = NativeCpuCompiler().lower(problem, arguments.stage)
+        if arguments.stage == "linalg" and schedule is not None:
+            raise ValueError(
+                "schedule options require --stage scheduled, llvm, or llvm-ir"
+            )
+        rendered = NativeCpuCompiler().lower(problem, arguments.stage, schedule)
     if arguments.output:
         Path(arguments.output).write_text(rendered, encoding="utf-8")
     else:
@@ -141,8 +169,11 @@ def _command_run_native(arguments: argparse.Namespace) -> int:
     problem = _problem(arguments)
     lhs, rhs = _arrays(problem, arguments.seed)
     reference = np.einsum(problem.equation.text, lhs, rhs, dtype=np.float32)
-    kernel = Compiler(CPU_MODEL).compile_native_direct(
-        problem, cache_dir=arguments.native_cache
+    tuning_cache = TuningCache(Path(arguments.tuning_cache)) if arguments.tuning_cache else None
+    kernel = Compiler(CPU_MODEL, cache=tuning_cache).compile_native_direct(
+        problem,
+        schedule=_schedule(arguments),
+        cache_dir=arguments.native_cache,
     )
     result = kernel.run(lhs, rhs)
     np.testing.assert_allclose(
@@ -153,7 +184,56 @@ def _command_run_native(arguments: argparse.Namespace) -> int:
     )
     print("PASS native-direct max_abs_error={:.6g}".format(maximum))
     print("Artifact: {}".format(kernel.library_path))
+    print("Schedule: {}".format(dict(kernel.schedule.as_dict())))
+    print("Expanded tiles: {}".format(kernel.expanded_tile_sizes))
     print("Cache: {}".format("hit" if kernel.cache_hit else "miss"))
+    return 0
+
+
+def _command_tune_native(arguments: argparse.Namespace) -> int:
+    problem = _problem(arguments)
+    lhs, rhs = _arrays(problem, arguments.seed)
+    cache = TuningCache(Path(arguments.cache))
+    result = Compiler(CPU_MODEL, cache=cache).tune_native_direct(
+        problem,
+        lhs,
+        rhs,
+        cache_dir=arguments.native_cache,
+        warmups=arguments.warmups,
+        repeats=arguments.repeats,
+        max_schedules=arguments.max_schedules,
+        rtol=arguments.rtol,
+        atol=arguments.atol,
+    )
+    payload = {
+        "schema": 1,
+        "kind": "native-direct-tuning",
+        "target": result.target,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "environment": result.environment,
+        "problem": dict(problem.describe()),
+        "configuration": {
+            "warmups": arguments.warmups,
+            "repeats": arguments.repeats,
+            "max_schedules": arguments.max_schedules,
+            "seed": arguments.seed,
+            "rtol": arguments.rtol,
+            "atol": arguments.atol,
+        },
+        "best": result.best.to_json(),
+        "baseline": result.baseline.to_json(),
+        "baseline_definition": "first statically ranked distinct schedule",
+        "speedup_vs_baseline": result.speedup_vs_baseline,
+        "measurements": [item.to_json() for item in result.measurements],
+        "tuning_cache": str(cache.path),
+    }
+    rendered = json.dumps(
+        payload, indent=2, sort_keys=True, allow_nan=False
+    ) + "\n"
+    if arguments.output:
+        Path(arguments.output).write_text(rendered, encoding="utf-8")
+    else:
+        print(rendered, end="")
     return 0
 
 
@@ -205,8 +285,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_problem_arguments(emit)
     emit.add_argument("--function", default="contract")
     emit.add_argument(
-        "--stage", choices=("tc", "linalg", "llvm", "llvm-ir"), default="tc"
+        "--stage",
+        choices=("tc", "linalg", "scheduled", "llvm", "llvm-ir"),
+        default="tc",
     )
+    _add_schedule_arguments(emit)
     emit.add_argument("-o", "--output")
     emit.set_defaults(handler=_command_emit_mlir)
 
@@ -220,7 +303,31 @@ def build_parser() -> argparse.ArgumentParser:
     native.add_argument(
         "--native-cache", type=Path, help="native artifact cache directory"
     )
+    native.add_argument(
+        "--tuning-cache", help="reuse a tune-native schedule cache"
+    )
+    _add_schedule_arguments(native)
     native.set_defaults(handler=_command_run_native)
+
+    native_tune = subparsers.add_parser(
+        "tune-native",
+        help="compile and measure real schedule-driven Direct dylibs",
+    )
+    _add_problem_arguments(native_tune)
+    native_tune.add_argument("--seed", type=int, default=0)
+    native_tune.add_argument("--warmups", type=int, default=1)
+    native_tune.add_argument("--repeats", type=int, default=5)
+    native_tune.add_argument("--max-schedules", type=int, default=12)
+    native_tune.add_argument("--rtol", type=float, default=1.0e-4)
+    native_tune.add_argument("--atol", type=float, default=1.0e-5)
+    native_tune.add_argument(
+        "--native-cache", type=Path, help="native artifact cache directory"
+    )
+    native_tune.add_argument(
+        "--cache", default=".einsumcc-cache/tuning-native-mini-v0.1.json"
+    )
+    native_tune.add_argument("-o", "--output")
+    native_tune.set_defaults(handler=_command_tune_native)
 
     benchmark = subparsers.add_parser(
         "benchmark", help="run a versioned CPU workload corpus"

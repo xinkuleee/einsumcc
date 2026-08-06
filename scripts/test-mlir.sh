@@ -18,6 +18,41 @@ einsumcc-opt "$project_root/test/Dialect/TC/valid.mlir" \
   | FileCheck "$project_root/test/Dialect/TC/valid.mlir" --check-prefix=ROUNDTRIP
 einsumcc-opt "$project_root/test/Dialect/TC/valid.mlir" --tc-contract-to-linalg \
   | FileCheck "$project_root/test/Dialect/TC/valid.mlir" --check-prefix=LOWER
+einsumcc-opt "$project_root/test/Dialect/TC/valid.mlir" \
+  --tc-contract-to-linalg \
+  --one-shot-bufferize=bufferize-function-boundaries \
+  --buffer-results-to-out-params='hoist-static-allocs modify-public-functions' \
+  '--einsumcc-schedule-direct=tile-sizes=2,3,4' \
+  | FileCheck "$project_root/test/Dialect/TC/valid.mlir" --check-prefix=SCHEDULE
+
+diagnostics=$project_root/build/invalid-schedule.log
+if einsumcc-opt "$project_root/test/Dialect/TC/valid.mlir" \
+    --tc-contract-to-linalg \
+    --one-shot-bufferize=bufferize-function-boundaries \
+    --buffer-results-to-out-params='hoist-static-allocs modify-public-functions' \
+    --einsumcc-schedule-direct -o /dev/null 2>"$diagnostics"; then
+  echo "schedule pass without tile sizes unexpectedly succeeded" >&2
+  exit 1
+fi
+if ! grep -q "Direct scheduling requires tile-sizes" "$diagnostics"; then
+  cat "$diagnostics" >&2
+  exit 1
+fi
+
+diagnostics=$project_root/build/invalid-schedule-rank.log
+if einsumcc-opt "$project_root/test/Dialect/TC/valid.mlir" \
+    --tc-contract-to-linalg \
+    --one-shot-bufferize=bufferize-function-boundaries \
+    --buffer-results-to-out-params='hoist-static-allocs modify-public-functions' \
+    '--einsumcc-schedule-direct=tile-sizes=2,3' -o /dev/null \
+    2>"$diagnostics"; then
+  echo "schedule pass with the wrong loop rank unexpectedly succeeded" >&2
+  exit 1
+fi
+if ! grep -q "expected 3 tile sizes, got 2" "$diagnostics"; then
+  cat "$diagnostics" >&2
+  exit 1
+fi
 
 diagnostics=$project_root/build/invalid-tc.log
 if einsumcc-opt "$project_root/test/Dialect/TC/invalid.mlir" -o /dev/null \
